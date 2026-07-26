@@ -3,18 +3,18 @@ import Foundation
 /// All the data structures needed to talk to YouTube's InnerTube API
 /// These match the JSON format that YouTube's servers expect and return
 
-// MARK: - Request Models
+// MARK: - Context Models
 
 /// The context object that every InnerTube request needs
 /// It tells YouTube which "client" we're pretending to be
 struct InnerTubeContext: Codable {
-    let client: InnerTubeClient
+    let client: InnerTubeClientInfo
 }
 
 /// Information about which YouTube client we're impersonating
-struct InnerTubeClient: Codable {
-    let clientName: String      // e.g. "IOS_MUSIC"
-    let clientVersion: String   // e.g. "7.27.0"
+struct InnerTubeClientInfo: Codable {
+    let clientName: String      // e.g. "WEB_REMIX" or "IOS"
+    let clientVersion: String   // e.g. "1.20260114.03.00"
     let deviceMake: String      // e.g. "Apple"
     let deviceModel: String     // e.g. "iPhone16,2"
     let hl: String              // language, e.g. "en"
@@ -22,57 +22,50 @@ struct InnerTubeClient: Codable {
     let osName: String          // e.g. "iPhone"
     let osVersion: String       // e.g. "18.2.0"
     let userAgent: String       // browser/device user agent string
+    let visitorData: String?    // optional visitor tracking data
 }
 
-/// The full request body we send to InnerTube
-struct InnerTubeRequest: Codable {
-    let context: InnerTubeContext
-    let query: String?              // for search requests
-    let browseId: String?           // for browse requests (home, trending, etc.)
-    let videoId: String?            // for player requests
-    let playlistId: String?         // for playlist requests
-    let params: String?             // additional parameters (pagination, filters)
-    
-    // Custom encoding so we only include non-nil values
-    enum CodingKeys: String, CodingKey {
-        case context, query, browseId, videoId, playlistId, params
-    }
+// MARK: - Search Response
+
+/// Response from a search request
+struct SearchResponse: Codable {
+    let contents: SearchContents?
 }
 
-// MARK: - Response Models
-
-/// The full response from InnerTube
-struct InnerTubeResponse: Codable {
-    let contents: ResponseContents?
-    let playabilityStatus: PlayabilityStatus?
-    let streamingData: StreamingData?
-    let videoDetails: VideoDetails?
-    let contents2: ResponseContents?  // some responses use "contents" differently
-    
-    // Custom key mapping for responses that nest differently
-    enum CodingKeys: String, CodingKey {
-        case contents, playabilityStatus, streamingData, videoDetails
-        case contents2 = "contents"
-    }
+/// Contents of search results
+struct SearchContents: Codable {
+    let tabbedSearchResultsRenderer: TabbedSearchResults?
 }
 
-/// Container for different types of content in a response
-struct ResponseContents: Codable {
-    let singleColumnSearchResultsRenderer: SingleColumnSearchResults?
-    let sectionListRenderer: SectionListRenderer?
+/// Tabbed search results (All, Songs, Videos, Albums, etc.)
+struct TabbedSearchResults: Codable {
+    let tabs: [SearchTab]?
+}
+
+/// A single search tab
+struct SearchTab: Codable {
     let tabRenderer: TabRenderer?
 }
 
-/// Search results wrapper
-struct SingleColumnSearchResults: Codable {
-    let contents: [SearchContent]?
+/// Tab renderer with content
+struct TabRenderer: Codable {
+    let content: TabContent?
 }
 
-/// A single content item from search or browse
-struct SearchContent: Codable {
-    let musicShelfRenderer: MusicShelfRenderer?
-    let musicResponsiveListItemRenderer: MusicResponsiveListItemRenderer?
+/// Content inside a tab
+struct TabContent: Codable {
     let sectionListRenderer: SectionListRenderer?
+}
+
+/// A list of sections
+struct SectionListRenderer: Codable {
+    let contents: [SectionContent]?
+}
+
+/// A single section
+struct SectionContent: Codable {
+    let musicShelfRenderer: MusicShelfRenderer?
+    let musicCarouselShelfRenderer: MusicCarouselShelfRenderer?
 }
 
 /// A shelf/section of music items
@@ -81,7 +74,7 @@ struct MusicShelfRenderer: Codable {
     let contents: [MusicItem]?
 }
 
-/// Individual music item (song, album, artist, etc.)
+/// Individual music item
 struct MusicItem: Codable {
     let musicResponsiveListItemRenderer: MusicResponsiveListItemRenderer?
 }
@@ -118,7 +111,7 @@ struct TextRun: Codable {
     }
 }
 
-/// A single segment of text (can have different styles)
+/// A single segment of text
 struct Run: Codable {
     let text: String
 }
@@ -165,7 +158,7 @@ struct Thumbnail: Codable {
 
 // MARK: - Overlay (for badges, duration, etc.)
 
-/// Overlay info on top of an item (like duration badge)
+/// Overlay info on top of an item
 struct ItemOverlay: Codable {
     let musicItemThumbnailOverlayRenderer: MusicItemThumbnailOverlayRenderer?
 }
@@ -175,7 +168,7 @@ struct MusicItemThumbnailOverlayRenderer: Codable {
     let content: OverlayContent?
 }
 
-/// What's in the overlay (usually a duration or badge)
+/// What's in the overlay
 struct OverlayContent: Codable {
     let musicResponsiveListItemOverlayLayout: OverlayLayout?
 }
@@ -185,20 +178,9 @@ struct OverlayLayout: Codable {
     let musicDurationText: TextRun?
 }
 
-// MARK: - Section List (for browse/home)
+// MARK: - Carousel (horizontal scrolling rows)
 
-/// A list of sections on a page
-struct SectionListRenderer: Codable {
-    let contents: [SectionContent]?
-}
-
-/// A single section
-struct SectionContent: Codable {
-    let musicShelfRenderer: MusicShelfRenderer?
-    let musicCarouselShelfRenderer: MusicCarouselShelfRenderer?
-}
-
-/// A horizontal carousel of music items (like "Trending" row)
+/// A horizontal carousel of music items
 struct MusicCarouselShelfRenderer: Codable {
     let header: CarouselHeader?
     let contents: [CarouselItem]?
@@ -228,27 +210,20 @@ struct MusicTwoRowItemRenderer: Codable {
     let subtitle: TextRun?
 }
 
-// MARK: - Tab Renderer (for home screen tabs)
+// MARK: - Player Response
 
-/// A tab on the home screen
-struct TabRenderer: Codable {
-    let content: TabContent?
+/// Response from a player request
+struct PlayerResponse: Codable {
+    let playabilityStatus: PlayabilityStatus?
+    let streamingData: StreamingData?
+    let videoDetails: VideoDetails?
 }
-
-/// Content inside a tab
-struct TabContent: Codable {
-    let sectionListRenderer: SectionListRenderer?
-}
-
-// MARK: - Playability
 
 /// Status of whether a video can be played
 struct PlayabilityStatus: Codable {
     let status: String          // "OK", "UNPLAYABLE", etc.
     let reason: String?         // why it can't be played
 }
-
-// MARK: - Streaming Data
 
 /// Contains the actual audio/video stream URLs
 struct StreamingData: Codable {
@@ -286,8 +261,6 @@ struct StreamFormat: Codable {
     }
 }
 
-// MARK: - Video Details
-
 /// Basic information about a video
 struct VideoDetails: Codable {
     let videoId: String
@@ -305,9 +278,9 @@ struct VideoThumbnail: Codable {
     let thumbnails: [Thumbnail]?
 }
 
-// MARK: - Browse Response (for home screen)
+// MARK: - Browse Response
 
-/// Response from a browse request (home, trending, library)
+/// Response from a browse request
 struct BrowseResponse: Codable {
     let contents: BrowseContents?
 }
@@ -327,24 +300,29 @@ struct BrowseTab: Codable {
     let tabRenderer: TabRenderer?
 }
 
-// MARK: - Search Response
+// MARK: - Search Suggestions Response
 
-/// Response from a search request
-struct SearchResponse: Codable {
-    let contents: SearchContents?
+/// Response from search suggestions
+struct GetSearchSuggestionsResponse: Codable {
+    let contents: [SearchSuggestionsSection]?
 }
 
-/// Contents of search results
-struct SearchContents: Codable {
-    let tabbedSearchResultsRenderer: TabbedSearchResults?
+/// A section of search suggestions
+struct SearchSuggestionsSection: Codable {
+    let searchSuggestionsSectionRenderer: SearchSuggestionsSectionRenderer?
 }
 
-/// Tabbed search results (All, Songs, Videos, Albums, etc.)
-struct TabbedSearchResults: Codable {
-    let tabs: [SearchTab]?
+/// The actual suggestions
+struct SearchSuggestionsSectionRenderer: Codable {
+    let contents: [SearchSuggestionItem]?
 }
 
-/// A single search tab
-struct SearchTab: Codable {
-    let tabRenderer: TabRenderer?
+/// A single suggestion item
+struct SearchSuggestionItem: Codable {
+    let searchSuggestionRenderer: SearchSuggestionRenderer?
+}
+
+/// The suggestion text
+struct SearchSuggestionRenderer: Codable {
+    let suggestion: TextRun?
 }
