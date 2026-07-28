@@ -1,7 +1,47 @@
 import Foundation
 
-/// All the data structures needed to talk to YouTube's InnerTube API
-/// These match the JSON format that YouTube's servers expect and return
+/// All the data structures needed to talk to YouTube's InnerTube API.
+///
+/// WHY SO MANY STRUCTS?
+/// YouTube's API returns deeply nested JSON. For example, a search response
+/// looks like this (simplified):
+///
+/// ```json
+/// {
+///   "contents": {
+///     "tabbedSearchResultsRenderer": {
+///       "tabs": [{
+///         "tabRenderer": {
+///           "content": {
+///             "sectionListRenderer": {
+///               "contents": [{
+///                 "musicShelfRenderer": {
+///                   "contents": [{ ... }]
+///                 }
+///               }]
+///             }
+///           }
+///         }
+///       }]
+///     }
+///   }
+/// }
+/// ```
+///
+/// That's 7 levels of nesting! Each level needs its own Swift struct because
+/// we can't decode arbitrary JSON — we need a struct for each object.
+/// So we create one struct per nesting level (e.g. SearchResponse contains
+/// TabbedSearchResultsRenderer, which contains TabRenderer, etc.).
+///
+/// All properties are optional (`?`) because YouTube's API omits fields
+/// unpredictably. A field present in one response might be absent in another.
+/// Making everything optional prevents decoding crashes.
+///
+/// These structs mirror YouTube's internal format exactly. They're NOT designed
+/// for our UI — they're designed to match the JSON. We convert them to simpler
+/// models (in Models.swift) before passing data to views.
+///
+/// Based on the open-source Metrolist project's InnerTube models.
 
 // MARK: - Context Models
 
@@ -325,4 +365,37 @@ struct SearchSuggestionItem: Codable {
 /// The suggestion text
 struct SearchSuggestionRenderer: Codable {
     let suggestion: TextRun?
+}
+
+// MARK: - Next Endpoint Models (Related Content)
+
+/// Response from the /next endpoint (related content)
+struct NextResponse: Codable {
+    let contents: NextContents?
+}
+
+/// Top-level contents of the next response
+struct NextContents: Codable {
+    let singleColumnMusicWatchNextResultsRenderer: SingleColumnWatchNext?
+}
+
+/// The watch next results container
+struct SingleColumnWatchNext: Codable {
+    let results: WatchNextResults?
+}
+
+/// Results container with the actual content
+struct WatchNextResults: Codable {
+    let results: WatchNextContents?
+}
+
+/// The contents array holding sections
+struct WatchNextContents: Codable {
+    let contents: [WatchNextContent]?
+}
+
+/// A single content item in the results
+struct WatchNextContent: Codable {
+    let musicResponsiveListItemRenderer: MusicResponsiveListItemRenderer?
+    let musicTwoRowItemRenderer: MusicTwoRowItemRenderer?
 }
