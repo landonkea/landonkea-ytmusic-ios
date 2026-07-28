@@ -322,6 +322,8 @@ struct PlaylistDetailView: View {
     private func playAll() {
         // Safety check: if there are no songs, exit early.
         guard !playlist.songs.isEmpty else { return }
+        // Donate a Siri shortcut for this playlist so user can say "Play My Playlist Name".
+        SiriShortcutsManager.donatePlayPlaylist(name: playlist.name)
         // Tell the audio player to play all songs starting at index 0 (the first song).
         audioPlayer.playAll(playlist.songs, startAt: 0)
     }
@@ -331,6 +333,8 @@ struct PlaylistDetailView: View {
     private func playFrom(index: Int) {
         // Safety check: make sure the index is within the song list bounds.
         guard index < playlist.songs.count else { return }
+        // Donate a Siri shortcut for this playlist so Siri learns it.
+        SiriShortcutsManager.donatePlayPlaylist(name: playlist.name)
         // Tell the audio player to play all songs starting from the given index.
         audioPlayer.playAll(playlist.songs, startAt: index)
     }

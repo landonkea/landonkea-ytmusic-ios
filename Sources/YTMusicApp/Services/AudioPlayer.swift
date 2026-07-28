@@ -722,6 +722,12 @@ class AudioPlayer: ObservableObject {
         queue.append(song)
         currentIndex = queue.count - 1
         Task {
+            // Donate a Siri Shortcut for this song so Siri can learn play patterns
+            SiriShortcutsManager.donatePlaySong(
+                title: song.title,
+                artist: song.artist,
+                videoId: song.id
+            )
             await playSong(song)
         }
     }
@@ -735,6 +741,8 @@ class AudioPlayer: ObservableObject {
         queue = songs
         currentIndex = min(index, songs.count - 1)
         Task {
+            // Donate resume shortcut — Siri learns "Resume my music"
+            SiriShortcutsManager.donateResumePlayback()
             await playSong(queue[currentIndex])
         }
     }

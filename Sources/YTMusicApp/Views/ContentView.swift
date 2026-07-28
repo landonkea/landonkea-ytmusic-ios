@@ -104,6 +104,9 @@ struct ContentView: View {
         .sheet(isPresented: $showQueue) {
             QueueView()
         }
+        // Apply the user's font size preference from Settings.
+        // Reads @AppStorage("fontSizeScale") and adjusts DynamicTypeSize.
+        .withFontScale()
     }
 }
 

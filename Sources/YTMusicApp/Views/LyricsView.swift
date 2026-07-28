@@ -349,26 +349,44 @@ struct SyncedLyricsDisplay: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 16) {
+                LazyVStack(spacing: 20) {
                     ForEach(Array((lyrics.syncedLines ?? []).enumerated()), id: \.offset) { index, line in
                         Text(line.text)
-                            .font(.title3)
+                            // Bigger font — title2 for inactive, title for active (karaoke feel)
+                            .font(index == currentLineIndex ? .title : .title2)
                             .fontWeight(index == currentLineIndex ? .bold : .regular)
                             // Current line is bright white, others are dimmed
-                            .foregroundColor(index == currentLineIndex ? .white : .white.opacity(0.4))
-                            // Current line scales up slightly for emphasis
-                            .scaleEffect(index == currentLineIndex ? 1.05 : 1.0)
-                            .animation(.easeInOut(duration: 0.3), value: currentLineIndex)
+                            .foregroundColor(index == currentLineIndex ? .white : .white.opacity(0.35))
+                            // Current line scales up for emphasis
+                            .scaleEffect(index == currentLineIndex ? 1.1 : 1.0)
+                            // Animate scale + opacity changes smoothly
+                            .animation(.easeInOut(duration: 0.35), value: currentLineIndex)
                             .id(index) // Needed for ScrollViewReader to scroll to this view
                             .multilineTextAlignment(.center)
-                            .padding(.horizontal)
+                            .padding(.horizontal, 32)
+                            .padding(.vertical, 8)
+                            // Pill-shaped background behind the active line (karaoke highlight)
+                            .background(
+                                Group {
+                                    if index == currentLineIndex {
+                                        // White background pill at 15% opacity
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .fill(Color.white.opacity(0.15))
+                                    } else {
+                                        // "Previous" lines get a subtle purple tint,
+                                        // "upcoming" lines have no background
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .fill(Color.clear)
+                                    }
+                                }
+                            )
                             // Tap to seek — tapping any line jumps playback to that timestamp
                             .onTapGesture {
                                 onLineTap?(index)
                             }
                     }
                 }
-                .padding(.vertical, 40)
+                .padding(.vertical, 60)
             }
             .onChange(of: currentLineIndex) { newIndex in
                 // Auto-scroll to keep the current line visible

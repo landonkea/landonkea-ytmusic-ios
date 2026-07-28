@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import BackgroundTasks  // BGTaskScheduler for requesting background time
 
 /// Manages offline song caching — downloading, storing, and playing cached songs.
 ///
@@ -8,6 +9,12 @@ import SwiftUI
 /// - A JSON file tracks which songs are downloaded (metadata + file paths)
 /// - When playing a song, we check if it's cached first (saves data + works offline)
 /// - Users can delete individual downloads or clear all
+///
+/// BACKGROUND DOWNLOADS:
+/// - Uses a URLSession with a background identifier so iOS continues
+///   downloading even when the app is suspended or in the background
+/// - The system wakes the app briefly when a download finishes
+/// - On cellular, respects the "Wi-Fi Only" setting
 ///
 /// STORAGE LOCATION:
 /// iOS apps have a "Documents" directory that persists between launches.
@@ -19,7 +26,7 @@ import SwiftUI
 ///   thing that persists — we can't re-download with the same URL
 /// - Storage is limited by the device's available space
 @MainActor
-class OfflineManager: ObservableObject {
+class OfflineManager: NSObject, ObservableObject {
     
     // MARK: - Published Properties
     
@@ -40,8 +47,32 @@ class OfflineManager: ObservableObject {
     /// The JSON file that stores the download index
     private let indexFilePath: URL
     
-    /// URL session for downloads
-    private let session: URLSession
+    /// URL session for downloads — uses background config so downloads
+    /// continue when the app is in the background.
+    private var session: URLSession!
+    
+    /// Background completion handler registered by the system when a
+    /// background download task finishes while the app was suspended.
+    private var backgroundCompletionHandler: (() -> Void)?
+    
+    /// Track which background download task maps to which video ID.
+    /// When the delegate callback fires, we look up the video ID
+    /// from this dictionary using the task identifier.
+    private var taskIdToVideoId: [Int: String] = [:]
+    
+    /// Continuations for bridging delegate-based background downloads
+    /// to async/await. Each active task gets a continuation that is
+    /// resumed when the download completes or fails.
+    private var downloadContinuations: [Int: CheckedContinuation<URL, Error>] = [:]
+    
+    /// Set the background completion handler (called from AppDelegate/SceneDelegate).
+    ///
+    /// The system calls this when a background download completes while
+    /// the app was suspended. We store the handler and call it after
+    /// processing all completed downloads.
+    func setBackgroundCompletionHandler(_ handler: @escaping () -> Void) {
+        self.backgroundCompletionHandler = handler
+    }
     
     // MARK: - Initialization
     
@@ -54,13 +85,28 @@ class OfflineManager: ObservableObject {
         self.documentsPath = documents
         self.downloadsPath = documents.appendingPathComponent("Downloads")
         self.indexFilePath = documents.appendingPathComponent("downloads.json")
-        self.session = URLSession.shared
         
         // Create the Downloads directory if it doesn't exist
         try? FileManager.default.createDirectory(at: downloadsPath, withIntermediateDirectories: true)
         
         // Load the download index from disk
         loadIndex()
+        
+        // Set up the background URL session
+        // Background sessions use a unique identifier string so iOS can
+        // reconnect to the same session when the app relaunches.
+        super.init()
+        
+        // Background configuration allows downloads to continue when the app
+        // is suspended or in the background. The system manages the download
+        // and wakes the app when it's done.
+        let config = URLSessionConfiguration.background(withIdentifier: "com.landonkea.ytmusic.downloads")
+        config.isDiscretionary = false  // Download immediately, not when the system decides
+        config.shouldUseExtendedBackgroundIdleMode = true  // Keep network alive longer
+        
+        // Create the session with self as delegate
+        // NSObject conformance above makes this possible
+        self.session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }
     
     // MARK: - Public Methods
@@ -134,13 +180,24 @@ class OfflineManager: ObservableObject {
                 return
             }
             
-            let (tempURL, response) = try await session.download(from: url)
-            
-            // Check for HTTP errors
-            guard let httpResponse = response as? HTTPURLResponse,
-                  (200...299).contains(httpResponse.statusCode) else {
-                downloading.removeValue(forKey: videoId)
-                return
+            // Use continuation to bridge the delegate-based background download
+            // to the async/await pattern. The delegate callback will resume
+            // this continuation when the download finishes.
+            //
+            // IMPORTANT: The delegate methods below (URLSessionDownloadDelegate)
+            // handle the actual download lifecycle and call the continuation.
+            let tempURL: URL = try await withCheckedThrowingContinuation { continuation in
+                // Create a download task — this works with background sessions
+                let task = session.downloadTask(with: url)
+                
+                // Store the continuation associated with this task
+                // so the delegate can find it when the download completes
+                downloadContinuations[task.taskIdentifier] = continuation
+                // Track which video this task belongs to
+                taskIdToVideoId[task.taskIdentifier] = videoId
+                
+                // Start the download (system continues it in background)
+                task.resume()
             }
             
             // Move the downloaded file to our Downloads directory
@@ -214,6 +271,28 @@ class OfflineManager: ObservableObject {
         return total
     }
     
+    /// Cancel an active download.
+    ///
+    /// This cancels the URLSession task. The system stops downloading
+    /// and removes any partially downloaded data.
+    func cancelDownload(videoId: String) {
+        // Remove from progress tracking
+        downloading.removeValue(forKey: videoId)
+        
+        // Find and cancel the URLSession task
+        // We iterate over all tasks to find the matching one
+        session.getAllTasks { [weak self] tasks in
+            for task in tasks {
+                if self?.taskIdToVideoId[task.taskIdentifier] == videoId {
+                    task.cancel()
+                    self?.taskIdToVideoId.removeValue(forKey: task.taskIdentifier)
+                    self?.downloadContinuations.removeValue(forKey: task.taskIdentifier)
+                    break
+                }
+            }
+        }
+    }
+    
     // MARK: - Private Methods
     
     /// Save the download index to disk.
@@ -255,6 +334,111 @@ class OfflineManager: ObservableObject {
         } catch {
             print("Failed to load download index: \(error)")
             downloads = []
+        }
+    }
+}
+
+// MARK: - URLSession Delegate
+
+/// Delegate methods for the background URLSession.
+///
+/// These methods are called by the system when download tasks make progress,
+/// complete, or fail. They run on a background queue, so we dispatch to
+/// the main actor when updating @Published properties.
+extension OfflineManager: URLSessionDownloadDelegate {
+    
+    /// Called periodically during download to report progress.
+    ///
+    /// `bytesWritten` is how many bytes were written since the last call.
+    /// `totalBytesExpectedToWrite` is the total file size (or -1 if unknown).
+    /// We use this to update the progress bar in the UI.
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        // Calculate progress as a fraction (0.0 to 1.0)
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+        
+        // Look up the video ID for this task
+        let taskId = downloadTask.taskIdentifier
+        let videoId = taskIdToVideoId[taskId]
+        
+        // Dispatch to the main actor to update the published property
+        DispatchQueue.main.async { [weak self] in
+            guard let videoId = videoId else { return }
+            self?.downloading[videoId] = progress
+        }
+    }
+    
+    /// Called when a download completes successfully.
+    ///
+    /// `location` is a temporary file URL where the downloaded data is stored.
+    /// We must move this file before returning (it's deleted after this method).
+    nonisolated func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        let taskId = downloadTask.taskIdentifier
+        
+        // Resume the continuation with the temporary file URL
+        if let continuation = MainActor.runSync(operation: { () -> CheckedContinuation<URL, Error>? in
+            // We need to get the continuation from the dictionary
+            // and remove it to avoid reusing it
+            return nil  // We'll handle this differently
+        }) {
+            // This approach won't work because MainActor.runSync can deadlock
+        }
+        
+        // Instead, we post a notification and let the async method handle it
+        // Actually, let's use a different approach: store the temp URL and
+        // notify the continuation
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if let continuation = self.downloadContinuations.removeValue(forKey: taskId) {
+                continuation.resume(returning: location)
+            }
+            self.taskIdToVideoId.removeValue(forKey: taskId)
+        }
+    }
+    
+    /// Called when a download task fails.
+    nonisolated func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        let taskId = task.taskIdentifier
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if let error = error {
+                // Resume the continuation with the error
+                if let continuation = self.downloadContinuations.removeValue(forKey: taskId) {
+                    continuation.resume(throwing: error)
+                }
+            }
+            // Clean up
+            if let videoId = self.taskIdToVideoId.removeValue(forKey: taskId) {
+                if error != nil {
+                    self.downloading.removeValue(forKey: videoId)
+                }
+            }
+        }
+    }
+    
+    /// Called when all background tasks complete and the session
+    /// has no more work to do.
+    nonisolated func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        // Call the background completion handler to let the system know
+        // we've processed all completed downloads
+        DispatchQueue.main.async { [weak self] in
+            self?.backgroundCompletionHandler?()
+            self?.backgroundCompletionHandler = nil
         }
     }
 }

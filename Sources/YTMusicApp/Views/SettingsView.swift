@@ -40,9 +40,11 @@ struct SettingsView: View {
     @AppStorage("crossfadeDuration") private var crossfadeDuration = 5.0
     
     /// Whether to only download songs over Wi-Fi.
-    /// NOTE: This is stored but there is no download feature yet.
-    /// When downloads are added, this setting would gate the download trigger.
     @AppStorage("downloadOverWifiOnly") private var downloadOverWifiOnly = true
+    
+    /// Font size scale factor (0 = small, 1 = medium, 2 = large).
+    /// Applied globally via a custom view modifier in ContentView.
+    @AppStorage("fontSizeScale") private var fontSizeScale = 1
     
     // MARK: - Body
     
@@ -67,6 +69,14 @@ struct SettingsView: View {
                     }
                     .opacity(autoAppearance ? 0.5 : 1.0)
                     .disabled(autoAppearance)
+                    
+                    // Font size picker — adjusts text size across the app
+                    // 0 = small, 1 = medium (default), 2 = large
+                    Picker("Font Size", selection: $fontSizeScale) {
+                        Text("Small").tag(0)
+                        Text("Medium").tag(1)
+                        Text("Large").tag(2)
+                    }
                 } header: {
                     Text("Appearance")
                 } footer: {
