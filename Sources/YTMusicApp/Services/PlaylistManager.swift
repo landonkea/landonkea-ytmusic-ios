@@ -81,6 +81,21 @@ class PlaylistManager: ObservableObject {
         savePlaylists()
     }
     
+    /// Toggle whether a playlist is pinned (appears at top of the list).
+    func togglePin(_ playlist: Playlist) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlist.id }) else { return }
+        playlists[index].isPinned.toggle()
+        savePlaylists()
+        
+        // Re-sort: pinned first, then by creation date (newest first)
+        playlists.sort { lhs, rhs in
+            if lhs.isPinned != rhs.isPinned {
+                return lhs.isPinned && !rhs.isPinned
+            }
+            return lhs.createdAt > rhs.createdAt
+        }
+    }
+    
     // MARK: - Song Management
     
     /// Add a song to a playlist.
@@ -159,6 +174,14 @@ class PlaylistManager: ObservableObject {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             playlists = try decoder.decode([Playlist].self, from: data)
+            
+            // Sort: pinned first, then by creation date (newest first)
+            playlists.sort { lhs, rhs in
+                if lhs.isPinned != rhs.isPinned {
+                    return lhs.isPinned && !rhs.isPinned
+                }
+                return lhs.createdAt > rhs.createdAt
+            }
         } catch {
             print("Failed to load playlists: \(error)")
             playlists = []
@@ -181,6 +204,10 @@ struct Playlist: Identifiable, Codable {
     
     /// When this playlist was created
     let createdAt: Date
+    
+    /// Whether this playlist is pinned to the top of the list.
+    /// Default false for backward compatibility with existing playlists.
+    var isPinned: Bool = false
     
     /// Number of songs in the playlist (computed convenience property)
     var songCount: Int {

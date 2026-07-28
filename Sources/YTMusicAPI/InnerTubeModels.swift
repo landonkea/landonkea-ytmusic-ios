@@ -323,6 +323,96 @@ struct VideoThumbnail: Codable {
 /// Response from a browse request
 struct BrowseResponse: Codable {
     let contents: BrowseContents?
+    let header: BrowseHeader?  // Present for artist/album/channel pages
+}
+
+/// Header in a browse response (artist pages, album pages, etc.)
+struct BrowseHeader: Codable {
+    let musicImmersiveHeaderRenderer: MusicImmersiveHeaderRenderer?
+    let musicVisualHeaderRenderer: MusicVisualHeaderRenderer?
+    let musicEditablePlaylistDetailHeaderRenderer: MusicEditablePlaylistDetailHeaderRenderer?
+    let musicDetailHeaderRenderer: MusicDetailHeaderRenderer?
+}
+
+/// Immersive header (used on artist pages)
+struct MusicImmersiveHeaderRenderer: Codable {
+    let title: TextRun?
+    let subtitle: TextRun?
+    let thumbnail: ThumbnailContainer?
+    let subscriptionButton: SubscriptionButton?
+    let description: TextRun?
+}
+
+/// Visual header (alternative artist page header)
+struct MusicVisualHeaderRenderer: Codable {
+    let title: TextRun?
+    let thumbnail: ThumbnailContainer?
+    let menu: MusicMenu?
+}
+
+/// Playlist detail header (used on album/playlist pages)
+struct MusicEditablePlaylistDetailHeaderRenderer: Codable {
+    let header: PlaylistDetailHeader?
+}
+
+/// Inner playlist detail header
+struct PlaylistDetailHeader: Codable {
+    let title: TextRun?
+    let subtitle: TextRun?
+    let songCount: TextRun?
+    let totalDuration: TextRun?
+    let thumbnail: ThumbnailContainer?
+    let editHeader: PlaylistEditHeader?
+}
+
+/// Edit header (for playlist editing metadata)
+struct PlaylistEditHeader: Codable {
+    let musicPlaylistEditHeaderRenderer: MusicPlaylistEditHeaderRenderer?
+}
+
+/// Playlist edit header renderer
+struct MusicPlaylistEditHeaderRenderer: Codable {
+    let title: TextRun?
+}
+
+/// Detail header (used on some album/playlist pages)
+struct MusicDetailHeaderRenderer: Codable {
+    let title: TextRun?
+    let subtitle: TextRun?
+    let thumbnail: ThumbnailContainer?
+}
+
+/// Subscription button (on artist pages)
+struct SubscriptionButton: Codable {
+    let subscribeButtonRenderer: SubscribeButtonRenderer?
+}
+
+/// Subscribe button renderer
+struct SubscribeButtonRenderer: Codable {
+    let subscriberCountText: TextRun?
+    let subscribed: Bool?
+    let channelId: String?
+}
+
+/// Menu (overflow menu on headers)
+struct MusicMenu: Codable {
+    let menuRenderer: MenuRenderer?
+}
+
+/// Menu renderer
+struct MenuRenderer: Codable {
+    let items: [MenuItem]?
+}
+
+/// A single menu item
+struct MenuItem: Codable {
+    let menuNavigationItemRenderer: MenuNavigationItemRenderer?
+}
+
+/// Menu navigation item
+struct MenuNavigationItemRenderer: Codable {
+    let text: TextRun?
+    let navigationEndpoint: NavigationEndpoint?
 }
 
 /// Contents of a browse response

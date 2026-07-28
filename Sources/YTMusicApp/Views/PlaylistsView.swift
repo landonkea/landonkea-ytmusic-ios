@@ -75,6 +75,24 @@ struct PlaylistsView: View {
                                 PlaylistRow(playlist: playlist)
                                 // ^ The visual row showing playlist name / counts
                             }
+                            .contextMenu {
+                                // Pin/Unpin toggle
+                                Button {
+                                    playlistManager.togglePin(playlist)
+                                } label: {
+                                    Label(
+                                        playlist.isPinned ? "Unpin" : "Pin to Top",
+                                        systemImage: playlist.isPinned ? "pin.slash" : "pin"
+                                    )
+                                }
+                                
+                                // Delete
+                                Button(role: .destructive) {
+                                    playlistManager.deletePlaylist(playlist)
+                                } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                         }
                         .onDelete { indexSet in
                             // ^ Attach swipe-to-delete to each row

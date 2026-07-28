@@ -384,6 +384,30 @@ struct SyncedLyricsDisplay: View {
                             .onTapGesture {
                                 onLineTap?(index)
                             }
+                            // Long press to copy this line
+                            .contextMenu {
+                                Button {
+                                    UIPasteboard.general.string = line.text
+                                } label: {
+                                    Label("Copy Line", systemImage: "doc.on.doc")
+                                }
+                                
+                                Button {
+                                    let allText = lyrics.syncedLines?.map(\.text).joined(separator: "\n") ?? ""
+                                    UIPasteboard.general.string = allText
+                                    let activityVC = UIActivityViewController(
+                                        activityItems: [allText],
+                                        applicationActivities: nil
+                                    )
+                                    // Get the root view controller to present the share sheet
+                                    if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                                       let rootVC = windowScene.windows.first?.rootViewController {
+                                        rootVC.present(activityVC, animated: true)
+                                    }
+                                } label: {
+                                    Label("Share Lyrics", systemImage: "square.and.arrow.up")
+                                }
+                            }
                     }
                 }
                 .padding(.vertical, 60)
@@ -414,6 +438,26 @@ struct PlainLyricsDisplay: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 40)
+                .contextMenu {
+                    Button {
+                        UIPasteboard.general.string = lyrics.plainText
+                    } label: {
+                        Label("Copy Lyrics", systemImage: "doc.on.doc")
+                    }
+                    
+                    Button {
+                        let activityVC = UIActivityViewController(
+                            activityItems: [lyrics.plainText],
+                            applicationActivities: nil
+                        )
+                        if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+                           let rootVC = windowScene.windows.first?.rootViewController {
+                            rootVC.present(activityVC, animated: true)
+                        }
+                    } label: {
+                        Label("Share Lyrics", systemImage: "square.and.arrow.up")
+                    }
+                }
         }
     }
 }

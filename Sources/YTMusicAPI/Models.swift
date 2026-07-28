@@ -157,3 +157,77 @@ struct NowPlaying: Equatable {
         return lhs.id == rhs.id
     }
 }
+
+// MARK: - Artist Info
+
+/// Full artist page data — including top songs, albums, and related artists.
+struct ArtistInfo: Identifiable {
+    /// YouTube channel ID (e.g. "UC...")
+    let id: String
+    /// Artist name
+    let name: String
+    /// URL to artist's avatar/thumbnail
+    let thumbnailUrl: String
+    /// Subscriber count text (e.g. "10.5M subscribers") — nil if unknown
+    let subscriberCount: String?
+    /// Artist description/biography — nil if not available
+    let description: String?
+    /// Most popular songs by this artist (from the "Top songs" section)
+    let topSongs: [SearchResult]
+    /// Albums, EPs, and singles by this artist
+    let albums: [AlbumInfo]
+    /// Related/similar artists
+    let relatedArtists: [ArtistInfo]
+}
+
+// MARK: - Album Info
+
+/// Album or EP data — including metadata and full track list.
+struct AlbumInfo: Identifiable {
+    /// YouTube browse ID for this album (e.g. "MPREb_...")
+    let id: String
+    /// Album title
+    let title: String
+    /// Artist name
+    let artist: String
+    /// Release year (e.g. 2024) — nil if not available
+    let year: Int?
+    /// URL to album cover art
+    let thumbnailUrl: String
+    /// Number of tracks — nil if unknown
+    let trackCount: Int?
+    /// Full track list — nil if not loaded yet
+    let tracks: [SearchResult]?
+}
+
+// MARK: - Explore Content
+
+/// A category on the explore page (moods, genres, new releases, etc.).
+struct ExploreCategory: Identifiable {
+    /// UUID generated automatically — not from YouTube
+    let id = UUID()
+    /// Category title (e.g. "New Releases", "Moods & Genres")
+    let title: String
+    /// Items in this category (albums, playlists, artists)
+    let items: [BrowseItem]
+}
+
+// MARK: - Playback Rate
+
+/// Available playback speed options.
+enum PlaybackRate: Double, CaseIterable {
+    case quarter = 0.25
+    case half = 0.5
+    case threeQuarter = 0.75
+    case normal = 1.0
+    case onePoint25 = 1.25
+    case onePoint5 = 1.5
+    case onePoint75 = 1.75
+    case double = 2.0
+    
+    /// Display label for the speed (e.g. "0.5×", "1×", "2×")
+    var label: String {
+        if self == .normal { return "Normal" }
+        return "\(rawValue)×"
+    }
+}

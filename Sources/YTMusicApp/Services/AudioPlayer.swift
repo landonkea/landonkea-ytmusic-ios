@@ -151,6 +151,22 @@ class AudioPlayer: ObservableObject {
     /// Fires every 0.1 seconds to smoothly adjust both players' volumes.
     private var crossfadeTimer: Timer?
     
+    // MARK: - Playback Speed
+    
+    /// Current playback speed/rate.
+    /// 1.0 = normal speed, 0.5 = half speed, 2.0 = double speed.
+    /// Stored in UserDefaults so the user's preference persists.
+    @Published var playbackRate: Double = 1.0
+    
+    /// Set the playback speed for the current and future songs.
+    /// Persists the setting and applies it immediately.
+    func setPlaybackRate(_ rate: Double) {
+        playbackRate = rate
+        UserDefaults.standard.set(rate, forKey: "playbackRate")
+        // Apply immediately to the current player
+        player?.rate = Float(rate)
+    }
+    
     // MARK: - Types
     
     /// Repeat mode options for the player.
@@ -173,6 +189,10 @@ class AudioPlayer: ObservableObject {
         self.isCrossfadeEnabled = UserDefaults.standard.bool(forKey: "crossfadeEnabled")
         let savedDuration = UserDefaults.standard.double(forKey: "crossfadeDuration")
         self.crossfadeDuration = savedDuration > 0 ? savedDuration : 5.0
+        
+        // Load saved playback rate
+        let savedRate = UserDefaults.standard.double(forKey: "playbackRate")
+        self.playbackRate = savedRate > 0 ? savedRate : 1.0
         
         setupAudioSession()       // Configure audio for background playback
         setupRemoteCommandCenter() // Register for lock screen / AirPods controls
@@ -370,6 +390,19 @@ class AudioPlayer: ObservableObject {
                 // `self.duration > 0` = guard against duration being 0 (which would
                 // cause an immediate "song ended" on playback start)
                 if time.seconds >= self.duration && self.duration > 0 {
+                    // Record listening stats before handling song end
+                    if let currentSong = self.currentSong {
+                        NotificationCenter.default.post(
+                            name: .songDidFinishPlaying,
+                            object: nil,
+                            userInfo: [
+                                "videoId": currentSong.id,
+                                "title": currentSong.title,
+                                "artist": currentSong.artist,
+                                "durationPlayed": self.duration
+                            ]
+                        )
+                    }
                     self.handleSongEnded()
                 }
             }
@@ -384,6 +417,8 @@ class AudioPlayer: ObservableObject {
         
         // Step 7: Start playback!
         newPlayer.play()
+        // Apply current playback speed
+        newPlayer.rate = Float(playbackRate)
         self.state = .playing
         
         // Step 8: Update Control Center / lock screen
@@ -1132,4 +1167,13 @@ class AudioPlayer: ObservableObject {
         // Set the info (without artwork — artwork loads asynchronously above)
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
+}
+
+// MARK: - Notifications
+
+/// Custom notification names used throughout the app for decoupled communication.
+extension Notification.Name {
+    /// Posted when a song finishes playing naturally (reaches its end).
+    /// UserInfo keys: "videoId" (String), "title" (String), "artist" (String), "durationPlayed" (Double).
+    static let songDidFinishPlaying = Notification.Name("songDidFinishPlaying")
 }

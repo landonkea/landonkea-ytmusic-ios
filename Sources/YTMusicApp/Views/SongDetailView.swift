@@ -42,6 +42,9 @@ struct SongDetailView: View {
     /// Tracks how many times a song has been played and when it was last played
     @EnvironmentObject var playCountManager: PlayCountManager
     
+    /// The liked songs manager — tracks which songs the user has liked
+    @EnvironmentObject var likedSongs: LikedSongsManager
+    
     /// Whether the playlist picker sheet is showing
     /// When true, a sheet slides up showing the user's playlists to choose from
     @State private var showPlaylistPicker = false
@@ -298,6 +301,30 @@ struct SongDetailView: View {
                                 .background(Color(.systemGray5))
                                 // Uses the primary text color
                                 .foregroundColor(.primary)
+                                // Rounds the corners to match the other buttons
+                                .cornerRadius(12)
+                            }
+                            
+                            // Like button — toggle like status for this song
+                            Button(action: {
+                                // Toggles the like status (add/remove from liked songs)
+                                likedSongs.toggle(videoId)
+                            }) {
+                                // The visual content of the like button
+                                HStack {
+                                    // Filled heart if liked, outline heart if not
+                                    Image(systemName: likedSongs.isLiked(videoId) ? "heart.fill" : "heart")
+                                    // Shows "Liked" or "Like" depending on status
+                                    Text(likedSongs.isLiked(videoId) ? "Liked" : "Like")
+                                }
+                                // Makes the button stretch to fill its share of the row
+                                .frame(maxWidth: .infinity)
+                                // Adds padding inside for a comfortable touch area
+                                .padding()
+                                // Uses pink when liked, gray when not
+                                .background(likedSongs.isLiked(videoId) ? Color.pink.opacity(0.2) : Color(.systemGray5))
+                                // Uses pink text when liked, primary when not
+                                .foregroundColor(likedSongs.isLiked(videoId) ? .pink : .primary)
                                 // Rounds the corners to match the other buttons
                                 .cornerRadius(12)
                             }

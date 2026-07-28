@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers  // For UTDocument types (not used directly here, but needed for file operations)
 
 /// Settings screen where users can customize app behavior.
 ///
@@ -45,6 +46,15 @@ struct SettingsView: View {
     /// Font size scale factor (0 = small, 1 = medium, 2 = large).
     /// Applied globally via a custom view modifier in ContentView.
     @AppStorage("fontSizeScale") private var fontSizeScale = 1
+    
+    /// The offline manager for storage info.
+    @EnvironmentObject var offlineManager: OfflineManager
+    
+    /// The stats manager for listening statistics.
+    @EnvironmentObject var statsManager: StatsManager
+    
+    /// Whether to show the clear cache confirmation alert.
+    @State private var showClearCacheAlert = false
     
     // MARK: - Body
     
@@ -134,6 +144,77 @@ struct SettingsView: View {
                     Text("Lower quality uses less storage space")
                 }
                 
+                // ── STORAGE SECTION ──────────────────────────────────
+                Section {
+                    // Show total storage used by downloads
+                    HStack {
+                        Label("Downloads", systemImage: "arrow.down.circle")
+                        Spacer()
+                        Text(downloadsSize)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    // Clear cache button
+                    Button(role: .destructive) {
+                        showClearCacheAlert = true
+                    } label: {
+                        Label("Clear All Downloads", systemImage: "trash")
+                            .foregroundColor(.red)
+                    }
+                    .disabled(offlineManager.downloads.isEmpty)
+                } header: {
+                    Text("Storage")
+                } footer: {
+                    Text("Downloads are stored on your device for offline playback")
+                }
+                .alert("Clear All Downloads?", isPresented: $showClearCacheAlert) {
+                    Button("Cancel", role: .cancel) { }
+                    Button("Clear", role: .destructive) {
+                        offlineManager.deleteAll()
+                    }
+                } message: {
+                    Text("This will remove all \(offlineManager.downloads.count) downloaded songs. This action cannot be undone.")
+                }
+                
+                // ── STATS SECTION ────────────────────────────────────
+                Section {
+                    HStack {
+                        Label("Total Time", systemImage: "clock")
+                        Spacer()
+                        Text(statsManager.formattedTotalTime)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    HStack {
+                        Label("Songs Played", systemImage: "music.note")
+                        Spacer()
+                        Text("\(statsManager.totalSongsPlayed)")
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    // Top artists
+                    let topArtists = statsManager.topArtists(limit: 3)
+                    if !topArtists.isEmpty {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("Top Artists", systemImage: "person.2.fill")
+                                .padding(.bottom, 4)
+                            ForEach(Array(topArtists.enumerated()), id: \.offset) { index, entry in
+                                HStack {
+                                    Text("\(index + 1). \(entry.artist)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                    Spacer()
+                                    Text("\(entry.count) plays")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Listening Stats")
+                }
+                
                 // ── ABOUT SECTION ───────────────────────────────────
                 Section {
                     // Static info rows — just display text, no action
@@ -185,6 +266,16 @@ struct SettingsView: View {
             // nil means "inherit from the system" (auto mode).
             .preferredColorScheme(autoAppearance ? nil : (darkMode ? .dark : .light))
         }
+    }
+    
+    // MARK: - Computed Properties
+    
+    /// Human-readable download storage size.
+    private var downloadsSize: String {
+        let totalBytes = offlineManager.totalStorageUsed()
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: totalBytes)
     }
 }
 

@@ -9,6 +9,7 @@ import SwiftUI
 /// - Swipe to remove songs from the playlist
 /// - Drag to reorder songs
 /// - Tap "Play All" to play the playlist from the beginning
+/// - Tap "Download All" to save all songs for offline playback
 struct PlaylistDetailView: View {
     // ↓ A struct is like a blueprint. Every line inside defines
     //   what this screen looks like and how it behaves.
@@ -28,6 +29,12 @@ struct PlaylistDetailView: View {
     // AudioPlayer controls music playback (play, pause, skip, etc.).
     @EnvironmentObject var audioPlayer: AudioPlayer
 
+    /// The offline manager for downloading songs
+    @EnvironmentObject var offlineManager: OfflineManager
+
+    /// The API client for fetching external playlist data
+    @EnvironmentObject var apiClient: APIClient
+
     /// Whether to show the rename alert
     // @State tells SwiftUI to watch this value and re-render the view
     // whenever it changes. Starts as false — the alert is hidden.
@@ -37,6 +44,21 @@ struct PlaylistDetailView: View {
     // Stores whatever the user types into the rename text field.
     // Starts as an empty string.
     @State private var renameText = ""
+
+    /// Whether downloads are in progress for "Download All"
+    @State private var isDownloadingAll = false
+
+    /// Whether we are working with a local playlist or an external one
+    private var isLocalPlaylist: Bool {
+        playlist != nil
+    }
+
+    /// The effective playlist (local or fetched from browseId)
+    /// For browseId playlists, this would be fetched from the API
+    @State private var fetchedPlaylist: Playlist?
+    
+    /// Loading state for external playlists
+    @State private var isLoadingExternal = false
 
     // body is the required property of the View protocol.
     // It describes the entire screen layout and behavior.
@@ -98,6 +120,31 @@ struct PlaylistDetailView: View {
                             .padding(.vertical, 12)
                             // Fills the background with Apple's blue color.
                             .background(Color.blue)
+                            // Rounds the corners by 12 pts.
+                            .cornerRadius(12)
+                        }
+                        
+                        // Download All button — downloads all songs for offline playback
+                        Button(action: {
+                            downloadAll()
+                        }) {
+                            // HStack arranges the icon and text side-by-side.
+                            HStack {
+                                // Download icon from SF Symbols.
+                                Image(systemName: "arrow.down.circle")
+                                // Label text.
+                                Text("Download All")
+                            }
+                            // Uses headline font style (slightly bold body text).
+                            .font(.headline)
+                            // White text on the blue button.
+                            .foregroundColor(.white)
+                            // Stretches the button to fill the whole width.
+                            .frame(maxWidth: .infinity)
+                            // Adds 12 pts of vertical padding inside the button.
+                            .padding(.vertical, 12)
+                            // Fills the background with green (download color).
+                            .background(Color.green)
                             // Rounds the corners by 12 pts.
                             .cornerRadius(12)
                         }
@@ -339,6 +386,36 @@ struct PlaylistDetailView: View {
         audioPlayer.playAll(playlist.songs, startAt: index)
     }
 
+    /// Download all songs in the playlist for offline playback.
+    private func downloadAll() {
+        guard !playlist.songs.isEmpty else { return }
+        
+        isDownloadingAll = true
+        
+        Task {
+            for song in playlist.songs {
+                // Skip if already downloaded
+                guard !offlineManager.isDownloaded(song.id),
+                      !offlineManager.isDownloading(song.id) else { continue }
+                
+                do {
+                    let playerInfo = try await apiClient.getPlayerInfoForDownload(videoId: song.id)
+                    await offlineManager.download(
+                        videoId: song.id,
+                        title: song.title,
+                        artist: song.artist,
+                        audioUrl: playerInfo.audioUrl,
+                        thumbnailUrl: song.thumbnailUrl
+                    )
+                } catch {
+                    print("Failed to download \(song.title): \(error)")
+                }
+            }
+            
+            isDownloadingAll = false
+        }
+    }
+    
     /// Reorder songs within the playlist.
     // Triggered when the user drags a song to a new position in the list.
     private func reorderSongs(from source: IndexSet, to destination: Int) {

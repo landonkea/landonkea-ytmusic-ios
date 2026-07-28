@@ -51,6 +51,12 @@ struct YTMusicApp: App {
     /// Created once and shared with SearchBar for microphone input.
     @StateObject private var voiceSearch = VoiceSearchManager()
     
+    /// The liked songs manager — tracks which songs the user has liked locally.
+    @StateObject private var likedSongs = LikedSongsManager()
+    
+    /// The stats manager — tracks listening statistics.
+    @StateObject private var statsManager = StatsManager()
+    
     /// Set up the shared play count manager for AudioPlayer to access.
     init() {
         PlayCountManager.shared = playCountManager
@@ -77,6 +83,8 @@ struct YTMusicApp: App {
                 .environmentObject(playlistManager)
                 .environmentObject(playCountManager)
                 .environmentObject(voiceSearch)
+                .environmentObject(likedSongs)
+                .environmentObject(statsManager)
         }
     }
 }
@@ -220,5 +228,39 @@ class APIClient: ObservableObject {
     /// recommendation algorithm. Used to show "Related" section in the player.
     func getRelated(videoId: String) async throws -> [SearchResult] {
         return try await client.getRelated(videoId: videoId)
+    }
+    
+    /// Get full artist page data.
+    ///
+    /// Used by ArtistView to display top songs, albums, and related artists.
+    func getArtist(channelId: String) async throws -> ArtistInfo {
+        return try await client.getArtist(channelId: channelId)
+    }
+    
+    /// Get full album data with track list.
+    ///
+    /// Used by AlbumView to display album tracks and metadata.
+    func getAlbum(browseId: String) async throws -> AlbumInfo {
+        return try await client.getAlbum(browseId: browseId)
+    }
+    
+    /// Get explore page data (new releases, moods, genres).
+    func getExplore() async throws -> [ExploreCategory] {
+        return try await client.getExplore()
+    }
+    
+    /// Get new releases from YouTube Music.
+    func getNewReleases() async throws -> [ExploreCategory] {
+        return try await client.getNewReleases()
+    }
+    
+    /// Get mood and genre categories.
+    func getMoodCategories() async throws -> [ExploreCategory] {
+        return try await client.getMoodCategories()
+    }
+    
+    /// Get playlists for a specific mood/genre.
+    func getMoodPlaylists(params: String) async throws -> [BrowseItem] {
+        return try await client.getMoodPlaylists(params: params)
     }
 }

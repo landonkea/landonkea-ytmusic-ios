@@ -50,6 +50,14 @@ struct ContentView: View {
                         Label("Search", systemImage: "magnifyingglass")
                     }
                 
+                // Explore tab — new releases, moods, genres
+                NavigationStack {
+                    ExploreView()
+                }
+                .tabItem {
+                    Label("Discover", systemImage: "square.grid.2x2")
+                }
+                
                 // Library tab — playlists and downloads
                 PlaylistsView()
                     .tabItem {
@@ -61,6 +69,13 @@ struct ContentView: View {
                     .tabItem {
                         Label("Settings", systemImage: "gearshape.fill")
                     }
+            }
+            // iPad/Mac keyboard shortcuts for playback control.
+            // These work when the app is focused and no text field is active.
+            .keyboardShortcut(" ", modifiers: [])  // Space = play/pause (no modifier)
+            .onKeyPress(.space) { [weak audioPlayer] in  // Alternative: SwiftUI onKeyPress
+                // Note: onKeyPress is iOS 17+; this is a backup approach
+                return .handled
             }
             
             // ── MINI PLAYER ────────────────────────────────────────
@@ -107,6 +122,32 @@ struct ContentView: View {
         // Apply the user's font size preference from Settings.
         // Reads @AppStorage("fontSizeScale") and adjusts DynamicTypeSize.
         .withFontScale()
+        // iPad/Mac keyboard shortcuts for playback control.
+        // These hidden buttons handle key presses via focus system.
+        .background {
+            // Space = Play/Pause
+            Button("") {
+                audioPlayer.togglePlayPause()
+            }
+            .keyboardShortcut(.space, modifiers: [])
+            .hidden()
+        }
+        .background {
+            // Right arrow = Next track
+            Button("") {
+                audioPlayer.playNext()
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [])
+            .hidden()
+        }
+        .background {
+            // Left arrow = Previous track
+            Button("") {
+                audioPlayer.playPrevious()
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [])
+            .hidden()
+        }
     }
 }
 

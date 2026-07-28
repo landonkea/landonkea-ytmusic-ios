@@ -44,6 +44,12 @@ struct PlayerView: View {
     /// Whether the related songs section is showing
     @State private var showRelated = false
     
+    /// Whether the playback speed picker is showing
+    @State private var showSpeedPicker = false
+    
+    /// Whether we are in a regular (iPad landscape) or compact (iPhone) horizontal size class
+    @Environment(\.horizontalSizeClass) var horizontalSizeClass
+    
     /// The offline manager for downloading songs
     @EnvironmentObject var offlineManager: OfflineManager
     
@@ -58,16 +64,28 @@ struct PlayerView: View {
         // show nothing (the full screen cover will be empty).
         if let song = audioPlayer.currentSong {
             ZStack {
-                // ── BACKGROUND GRADIENT ─────────────────────────────
-                // LinearGradient fills the entire background with a gradient.
-                // `.ignoresSafeArea()` makes it extend behind the status bar
-                // and home indicator (bottom bar on notched iPhones).
-                LinearGradient(
-                    colors: [.blue.opacity(0.8), .purple.opacity(0.8)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
+                // ── BACKGROUND: FULL-SCREEN ALBUM ART ─────────────────
+                // Use the album art as a blurred background, creating a
+                // dynamic, contextual color scheme. Falls back to gradient
+                // while the image loads.
+                AsyncImage(url: URL(string: song.thumbnailUrl)) { phase in
+                    if let image = phase.image {
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .blur(radius: 60, opaque: true)
+                            .overlay(Color.black.opacity(0.4)) // Dark overlay for readability
+                            .ignoresSafeArea()
+                    } else {
+                        // Fallback gradient while album art loads
+                        LinearGradient(
+                            colors: [.blue.opacity(0.8), .purple.opacity(0.8)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                        .ignoresSafeArea()
+                    }
+                }
                 
                 // Main content stacked vertically with 24pt spacing between items
                 VStack(spacing: 24) {
@@ -419,6 +437,21 @@ struct PlayerView: View {
                                 .foregroundColor(.white)
                         }
                         .accessibilityLabel("Queue")
+                        
+                        // Playback speed button — opens speed picker
+                        Button(action: {
+                            showSpeedPicker = true
+                        }) {
+                            let isCustom = abs(audioPlayer.playbackRate - 1.0) > 0.01
+                            Text("\(audioPlayer.playbackRate, specifier: "%.1f")×")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundColor(isCustom ? .yellow : .white.opacity(0.5))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(Capsule().stroke(isCustom ? Color.yellow : Color.white.opacity(0.3), lineWidth: 1))
+                        }
+                        .accessibilityLabel("Playback speed: \(audioPlayer.playbackRate, specifier: "%.1f")×")
                     }
                     .padding(.bottom, 20)
                 }
@@ -466,9 +499,57 @@ struct PlayerView: View {
             .sheet(isPresented: $showQueue) {
                 QueueView()
             }
+            // Playback speed picker — choose from 0.25× to 2.0×
+            .sheet(isPresented: $showSpeedPicker) {
+                speedPickerSheet
+            }
+            // Swipe down gesture to dismiss player
+            .gesture(
+                DragGesture()
+                    .onEnded { value in
+                        if value.translation.height > 80 {
+                            isShowing = false
+                        }
+                    }
+            )
             // Override the color scheme for this view only
             // isLightMode toggles between light and dark regardless of global setting
             .preferredColorScheme(isLightMode ? .light : .dark)
+        }
+    }
+    
+    // MARK: - Speed Picker Sheet
+    
+    /// Sheet that lets the user choose a playback speed.
+    private var speedPickerSheet: some View {
+        NavigationView {
+            List {
+                Section("Playback Speed") {
+                    ForEach(PlaybackRate.allCases, id: \.rawValue) { rate in
+                        Button {
+                            audioPlayer.setPlaybackRate(rate.rawValue)
+                            showSpeedPicker = false
+                        } label: {
+                            HStack {
+                                Text(rate.label)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                if abs(audioPlayer.playbackRate - rate.rawValue) < 0.01 {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(.purple)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Speed")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") { showSpeedPicker = false }
+                }
+            }
         }
     }
     

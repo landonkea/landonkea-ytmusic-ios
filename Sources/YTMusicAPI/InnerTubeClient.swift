@@ -235,6 +235,262 @@ class InnerTubeClient {
             ?? []
     }
     
+    // MARK: - Artist Page
+    
+    /// Get full artist page data including top songs, albums, and related artists.
+    ///
+    /// - Parameter channelId: YouTube channel ID (e.g. "UC...")
+    /// - Returns: ArtistInfo with songs, albums, and related artists
+    func getArtist(channelId: String) async throws -> ArtistInfo {
+        let sections = try await browse(browseId: channelId)
+        
+        // Parse header from the raw response
+        let response: BrowseResponse = try await POST(
+            endpoint: "/browse",
+            client: webRemixClient,
+            body: BrowseBody(
+                context: webRemixClient.toContext(visitorData: visitorData),
+                browseId: channelId,
+                params: nil
+            )
+        )
+        
+        // Extract artist name and thumbnail from header
+        let name: String
+        let thumbnailUrl: String
+        let subscriberCount: String?
+        let description: String?
+        
+        if let immersiveHeader = response.header?.musicImmersiveHeaderRenderer {
+            name = immersiveHeader.title?.text ?? "Unknown Artist"
+            thumbnailUrl = immersiveHeader.thumbnail?.musicThumbnailRenderer?.thumbnails?.last?.url ?? ""
+            subscriberCount = immersiveHeader.subtitle?.text
+            description = immersiveHeader.description?.text
+        } else if let visualHeader = response.header?.musicVisualHeaderRenderer {
+            name = visualHeader.title?.text ?? "Unknown Artist"
+            thumbnailUrl = visualHeader.thumbnail?.musicThumbnailRenderer?.thumbnails?.last?.url ?? ""
+            subscriberCount = nil
+            description = nil
+        } else {
+            name = "Unknown Artist"
+            thumbnailUrl = ""
+            subscriberCount = nil
+            description = nil
+        }
+        
+        // Parse sections into albums, top songs, and related artists
+        var topSongs: [SearchResult] = []
+        var albums: [AlbumInfo] = []
+        var relatedArtists: [ArtistInfo] = []
+        
+        for section in sections {
+            let sectionTitle = section.title.lowercased()
+            
+            if sectionTitle.contains("top") || sectionTitle.contains("popular") {
+                // Top songs section — convert BrowseItems to SearchResults
+                for item in section.items {
+                    topSongs.append(SearchResult(
+                        id: item.id,
+                        title: item.title,
+                        artist: item.subtitle,
+                        thumbnailUrl: item.thumbnailUrl,
+                        duration: nil
+                    ))
+                }
+            } else if sectionTitle.contains("album") || sectionTitle.contains("single") || sectionTitle.contains("release") {
+                // Albums / Singles section
+                for item in section.items {
+                    albums.append(AlbumInfo(
+                        id: item.id,
+                        title: item.title,
+                        artist: item.subtitle,
+                        year: nil,
+                        thumbnailUrl: item.thumbnailUrl,
+                        trackCount: nil,
+                        tracks: nil
+                    ))
+                }
+            } else if sectionTitle.contains("related") || sectionTitle.contains("similar") || sectionTitle.contains("fans") {
+                // Related artists section
+                for item in section.items {
+                    relatedArtists.append(ArtistInfo(
+                        id: item.id,
+                        name: item.title,
+                        thumbnailUrl: item.thumbnailUrl,
+                        subscriberCount: nil,
+                        description: nil,
+                        topSongs: [],
+                        albums: [],
+                        relatedArtists: []
+                    ))
+                }
+            } else {
+                // Default: treat as songs (for sections like "Singles")
+                for item in section.items {
+                    if item.type == .song {
+                        topSongs.append(SearchResult(
+                            id: item.id,
+                            title: item.title,
+                            artist: item.subtitle,
+                            thumbnailUrl: item.thumbnailUrl,
+                            duration: nil
+                        ))
+                    } else {
+                        albums.append(AlbumInfo(
+                            id: item.id,
+                            title: item.title,
+                            artist: item.subtitle,
+                            year: nil,
+                            thumbnailUrl: item.thumbnailUrl,
+                            trackCount: nil,
+                            tracks: nil
+                        ))
+                    }
+                }
+            }
+        }
+        
+        return ArtistInfo(
+            id: channelId,
+            name: name,
+            thumbnailUrl: thumbnailUrl,
+            subscriberCount: subscriberCount,
+            description: description,
+            topSongs: topSongs,
+            albums: albums,
+            relatedArtists: relatedArtists
+        )
+    }
+    
+    // MARK: - Album Page
+    
+    /// Get full album data including track list.
+    ///
+    /// - Parameter browseId: YouTube browse ID for the album (e.g. "MPREb_...")
+    /// - Returns: AlbumInfo with full track list
+    func getAlbum(browseId: String) async throws -> AlbumInfo {
+        let sections = try await browse(browseId: browseId)
+        
+        // Parse header from raw response
+        let response: BrowseResponse = try await POST(
+            endpoint: "/browse",
+            client: webRemixClient,
+            body: BrowseBody(
+                context: webRemixClient.toContext(visitorData: visitorData),
+                browseId: browseId,
+                params: nil
+            )
+        )
+        
+        // Extract album info from header
+        let title: String
+        let artist: String
+        let thumbnailUrl: String
+        var trackCount: Int? = nil
+        var year: Int? = nil
+        
+        if let playlistHeader = response.header?.musicEditablePlaylistDetailHeaderRenderer?.header {
+            title = playlistHeader.title?.text ?? "Unknown Album"
+            
+            // Subtitle is usually "Artist • Year • Track Count"
+            let subtitle = playlistHeader.subtitle?.text ?? ""
+            let parts = subtitle.components(separatedBy: "•").map { $0.trimmingCharacters(in: .whitespaces) }
+            artist = parts.first ?? "Unknown Artist"
+            if parts.count >= 2, let albumYear = Int(parts[1].trimmingCharacters(in: .whitespaces)) {
+                year = albumYear
+            }
+            if parts.count >= 3, let count = Int(parts[2].trimmingCharacters(in: .whitespaces)) {
+                trackCount = count
+            }
+            
+            thumbnailUrl = playlistHeader.thumbnail?.musicThumbnailRenderer?.thumbnails?.last?.url ?? ""
+            
+            // If header has song count, use it
+            if let countText = playlistHeader.songCount?.text {
+                let digits = countText.components(separatedBy: CharacterSet.decimalDigits.inverted).joined()
+                trackCount = Int(digits)
+            }
+        } else if let detailHeader = response.header?.musicDetailHeaderRenderer {
+            title = detailHeader.title?.text ?? "Unknown Album"
+            artist = detailHeader.subtitle?.text ?? "Unknown Artist"
+            thumbnailUrl = detailHeader.thumbnail?.musicThumbnailRenderer?.thumbnails?.last?.url ?? ""
+        } else {
+            title = "Unknown Album"
+            artist = "Unknown Artist"
+            thumbnailUrl = ""
+        }
+        
+        // Parse tracks from the first section
+        var tracks: [SearchResult] = []
+        for section in sections {
+            for item in section.items {
+                tracks.append(SearchResult(
+                    id: item.id,
+                    title: item.title,
+                    artist: item.subtitle,
+                    thumbnailUrl: item.thumbnailUrl,
+                    duration: nil
+                ))
+            }
+        }
+        
+        return AlbumInfo(
+            id: browseId,
+            title: title,
+            artist: artist,
+            year: year,
+            thumbnailUrl: thumbnailUrl,
+            trackCount: tracks.isEmpty ? trackCount : tracks.count,
+            tracks: tracks
+        )
+    }
+    
+    // MARK: - Explore / New Releases / Moods
+    
+    /// Get the YouTube Music explore page (new releases, moods, genres).
+    ///
+    /// - Returns: Array of explore categories
+    func getExplore() async throws -> [ExploreCategory] {
+        let sections = try await browse(browseId: "FEmusic_explore")
+        
+        return sections.map { section in
+            ExploreCategory(title: section.title, items: section.items)
+        }
+    }
+    
+    /// Get new releases from YouTube Music.
+    ///
+    /// - Returns: Array of explore categories with new albums and singles
+    func getNewReleases() async throws -> [ExploreCategory] {
+        let sections = try await browse(browseId: "FEmusic_new_releases")
+        
+        return sections.map { section in
+            ExploreCategory(title: section.title, items: section.items)
+        }
+    }
+    
+    /// Get mood and genre categories from YouTube Music.
+    ///
+    /// - Returns: Array of mood/genre categories
+    func getMoodCategories() async throws -> [ExploreCategory] {
+        let sections = try await browse(browseId: "FEmusic_moods_and_genres")
+        
+        return sections.map { section in
+            ExploreCategory(title: section.title, items: section.items)
+        }
+    }
+    
+    /// Get playlists for a specific mood or genre.
+    ///
+    /// - Parameter params: The browse params for the mood category
+    /// - Returns: Array of browse items (playlists)
+    func getMoodPlaylists(params: String) async throws -> [BrowseItem] {
+        let sections = try await browse(browseId: "FEmusic_moods_and_genres", params: params)
+        
+        // Flatten all items from all sections
+        return sections.flatMap { $0.items }
+    }
+    
     // MARK: - Private Helpers
     
     /// Make a POST request to an InnerTube endpoint.
