@@ -391,7 +391,14 @@ struct ArtistView: View {
     private func playSong(_ song: SearchResult) async {
         do {
             let info = try await apiClient.getPlayerInfo(videoId: song.id)
-            audioPlayer.play(info: info)
+            await audioPlayer.play(
+                videoId: info.videoId,
+                title: info.title,
+                artist: info.artist,
+                thumbnailUrl: info.thumbnailUrl,
+                audioUrl: info.audioUrl,
+                duration: info.duration
+            )
         } catch {
             print("Failed to play song: \(error)")
         }

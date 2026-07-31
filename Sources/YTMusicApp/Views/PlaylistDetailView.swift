@@ -205,69 +205,12 @@ struct PlaylistDetailView: View {
                             // Calls the private method below starting at this index.
                             playFrom(index: index)
                         }) {
-                            // HStack lays out the row content horizontally.
-                            HStack(spacing: 12) {
-                                // Position number
-                                // Shows the 1-based position (index + 1).
-                                Text("\(index + 1)")
-                                    // Small font.
-                                    .font(.subheadline)
-                                    // Gray color.
-                                    .foregroundColor(.secondary)
-                                    // Fixed width so all numbers align vertically.
-                                    .frame(width: 24)
-
-                                // Album art thumbnail
-                                // AsyncImage loads an image from a URL asynchronously.
-                                AsyncImage(url: URL(string: song.thumbnailUrl)) { image in
-                                    // Once loaded, make the image resizable and fill its frame.
-                                    image
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                } placeholder: {
-                                    // While loading, show a gray rectangle placeholder.
-                                    Rectangle()
-                                        .fill(Color.gray.opacity(0.3))
-                                }
-                                // Sets thumbnail dimensions: 48 x 48 pts.
-                                .frame(width: 48, height: 48)
-                                // Rounds the thumbnail corners slightly.
-                                .cornerRadius(6)
-
-                                // Song info
-                                // Vertical stack with the song title and artist.
-                                VStack(alignment: .leading, spacing: 4) {
-                                    // The song's title text.
-                                    Text(song.title)
-                                        // Small font.
-                                        .font(.subheadline)
-                                        // Truncate with ellipsis if too long (single line).
-                                        .lineLimit(1)
-                                        // Black/dark text (primary color).
-                                        .foregroundColor(.primary)
-
-                                    // The song's artist name.
-                                    Text(song.artist)
-                                        // Even smaller caption font.
-                                        .font(.caption)
-                                        // Gray color.
-                                        .foregroundColor(.secondary)
-                                        // Also truncate if too long.
-                                        .lineLimit(1)
-                                }
-
-                                // Pushes everything to the left; keeps duration on the right.
-                                Spacer()
-
-                                // Duration
-                                // Formats seconds into readable "M:SS" or "H:MM:SS".
-                                Text(formatDuration(song.duration))
-                                    // Small caption font.
-                                    .font(.caption)
-                                    // Gray color.
-                                    .foregroundColor(.secondary)
-                            }
-                        }
+                        // HStack lays out the row content horizontally.
+                        // The row is a separate function so the compiler can
+                        // type-check it on its own (the combined expression
+                        // was too large for Swift's type-checker).
+                        songRow(song: song, index: index)
+                    }
                         // Removes the default blue highlight when tapping the row.
                         .buttonStyle(.plain)
                         // Adds a swipe gesture on the right edge of the row.
@@ -309,11 +252,8 @@ struct PlaylistDetailView: View {
                         ShareLink(
                             // The text content to share.
                             item: playlistShareText,
-                            // Preview shows the playlist name when sharing.
-                            preview: SharePreview(
-                                playlist.name,
-                                text: playlistShareText
-                            )
+                        // Preview shows the playlist name when sharing.
+                        preview: SharePreview(playlist.name)
                         ) {
                             // The menu item label with share icon.
                             Label("Share Playlist", systemImage: "square.and.arrow.up")
@@ -454,6 +394,77 @@ struct PlaylistDetailView: View {
         } else {
             // Returns e.g. "23:45" (minutes:seconds with zero-padding).
             return String(format: "%d:%02d", minutes, secs)
+        }
+    }
+
+    /// Build the visual row for a single song in the playlist.
+    ///
+    /// Extracted into its own function so Swift's type-checker can
+    /// handle this expression separately (the original inline row
+    /// made the compiler time out).
+    @ViewBuilder
+    private func songRow(song: NowPlaying, index: Int) -> some View {
+        // HStack lays out the row content horizontally.
+        HStack(spacing: 12) {
+            // Position number
+            // Shows the 1-based position (index + 1).
+            Text("\(index + 1)")
+                // Small font.
+                .font(.subheadline)
+                // Gray color.
+                .foregroundColor(.secondary)
+                // Fixed width so all numbers align vertically.
+                .frame(width: 24)
+
+            // Album art thumbnail
+            // AsyncImage loads an image from a URL asynchronously.
+            AsyncImage(url: URL(string: song.thumbnailUrl)) { image in
+                // Once loaded, make the image resizable and fill its frame.
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                // While loading, show a gray rectangle placeholder.
+                Rectangle()
+                    .fill(Color.gray.opacity(0.3))
+            }
+            // Sets thumbnail dimensions: 48 x 48 pts.
+            .frame(width: 48, height: 48)
+            // Rounds the thumbnail corners slightly.
+            .cornerRadius(6)
+
+            // Song info
+            // Vertical stack with the song title and artist.
+            VStack(alignment: .leading, spacing: 4) {
+                // The song's title text.
+                Text(song.title)
+                    // Small font.
+                    .font(.subheadline)
+                    // Truncate with ellipsis if too long (single line).
+                    .lineLimit(1)
+                    // Black/dark text (primary color).
+                    .foregroundColor(.primary)
+
+                // The song's artist name.
+                Text(song.artist)
+                    // Even smaller caption font.
+                    .font(.caption)
+                    // Gray color.
+                    .foregroundColor(.secondary)
+                    // Also truncate if too long.
+                    .lineLimit(1)
+            }
+
+            // Pushes everything to the left; keeps duration on the right.
+            Spacer()
+
+            // Duration
+            // Formats seconds into readable "M:SS" or "H:MM:SS".
+            Text(formatDuration(song.duration))
+                // Small caption font.
+                .font(.caption)
+                // Gray color.
+                .foregroundColor(.secondary)
         }
     }
 

@@ -125,6 +125,29 @@ struct HomeView: View {
             }
         }
     }
+    
+    // MARK: - Most Played Helper
+    
+    /// Get the user's most played songs with full metadata.
+    ///
+    /// Cross-references play counts from PlayCountManager with the
+    /// recently played list to get complete song info (title, artist, etc.).
+    /// Returns up to 10 songs sorted by play count.
+    private func getMostPlayedSongs() -> [(song: NowPlaying, playCount: Int)] {
+        let topPlayed = playCountManager.getMostPlayed(limit: 10)
+        
+        // Map play counts to full song objects using recently played as a lookup
+        var result: [(song: NowPlaying, playCount: Int)] = []
+        
+        for item in topPlayed {
+            // Find the song in recently played to get full metadata
+            if let song = audioPlayer.recentlyPlayed.first(where: { $0.id == item.videoId }) {
+                result.append((song: song, playCount: item.count))
+            }
+        }
+        
+        return result
+    }
 }
 
 // MARK: - Section View
@@ -338,29 +361,6 @@ struct RecentlyPlayedSection: View {
             }
         }
     }
-    
-    // MARK: - Most Played Helper
-    
-    /// Get the user's most played songs with full metadata.
-    ///
-    /// Cross-references play counts from PlayCountManager with the
-    /// recently played list to get complete song info (title, artist, etc.).
-    /// Returns up to 10 songs sorted by play count.
-    private func getMostPlayedSongs() -> [(song: NowPlaying, playCount: Int)] {
-        let topPlayed = playCountManager.getMostPlayed(limit: 10)
-        
-        // Map play counts to full song objects using recently played as a lookup
-        var result: [(song: NowPlaying, playCount: Int)] = []
-        
-        for item in topPlayed {
-            // Find the song in recently played to get full metadata
-            if let song = audioPlayer.recentlyPlayed.first(where: { $0.id == item.videoId }) {
-                result.append((song: song, playCount: item.count))
-            }
-        }
-        
-        return result
-    }
 }
 
 // MARK: - Most Played Section
@@ -448,18 +448,6 @@ struct MostPlayedSection: View {
                     }
                 }
                 .padding(.horizontal)
-            }
-        }
-        // Song details sheet — shows play count, last played, actions
-        .sheet(isPresented: $showSongInfo) {
-            if let song = selectedSong {
-                SongDetailView(
-                    videoId: song.id,
-                    title: song.title,
-                    artist: song.artist,
-                    thumbnailUrl: song.thumbnailUrl,
-                    duration: "\(song.duration)"
-                )
             }
         }
     }

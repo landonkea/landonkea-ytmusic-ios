@@ -212,21 +212,24 @@ struct PlaylistsView: View {
             return
         }
 
-        audioPlayer.playLocal(
-            // ^ Call the player with a local file instead of streaming
-            videoId: song.videoId,
-            // ^ The unique YouTube video identifier
-            title: song.title,
-            // ^ The song title for the now-playing display
-            artist: song.artist,
-            // ^ The artist name for the now-playing display
-            thumbnailUrl: song.thumbnailUrl,
-            // ^ The album art URL for the now-playing display
-            localURL: localURL,
-            // ^ The local file URL — player reads from disk, not the network
-            duration: 0
-            // ^ Duration unknown for cached songs; AudioPlayer will detect it
-        )
+        // playLocal is async — wrap the call in a Task.
+        Task {
+            await audioPlayer.playLocal(
+                // ^ Call the player with a local file instead of streaming
+                videoId: song.videoId,
+                // ^ The unique YouTube video identifier
+                title: song.title,
+                // ^ The song title for the now-playing display
+                artist: song.artist,
+                // ^ The artist name for the now-playing display
+                thumbnailUrl: song.thumbnailUrl,
+                // ^ The album art URL for the now-playing display
+                localURL: localURL,
+                // ^ The local file URL — player reads from disk, not the network
+                duration: 0
+                // ^ Duration unknown for cached songs; AudioPlayer will detect it
+            )
+        }
     }
 }
 

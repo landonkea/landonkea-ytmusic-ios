@@ -374,14 +374,15 @@ struct ExploreView: View {
             PlaylistBrowseView(browseId: item.id, title: item.title)
         case .song:
             // Songs play inline — no navigation
-            // Show a song detail view instead
-            SongDetailView(song: SearchResult(
-                id: item.id,
+            // Show a song detail view instead.
+            // SongDetailView takes the song info as individual parameters.
+            SongDetailView(
+                videoId: item.id,
                 title: item.title,
                 artist: item.subtitle,
                 thumbnailUrl: item.thumbnailUrl,
-                duration: nil
-            ))
+                duration: ""
+            )
         }
     }
 }

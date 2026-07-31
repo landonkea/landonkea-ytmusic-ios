@@ -247,19 +247,21 @@ struct SongDetailView: View {
                             
                             // Download button — saves song for offline playback
                             Button(action: {
-                                // Create a minimal NowPlaying object for the download
-                                let song = NowPlaying(
-                                    id: videoId,
-                                    title: title,
-                                    artist: artist,
-                                    thumbnailUrl: thumbnailUrl,
-                                    duration: 0,
-                                    audioUrl: ""
-                                )
                                 // Only download if the song isn't already downloaded
                                 if !offlineManager.isDownloaded(videoId) {
-                                    // Starts the download process via the offline manager
-                                    offlineManager.download(song)
+                                    // download() is async, so wrap the call in a Task.
+                                    // NOTE: This screen only has display info — no
+                                    // stream URL — so audioUrl is empty and the
+                                    // download will not actually succeed here.
+                                    Task {
+                                        await offlineManager.download(
+                                            videoId: videoId,
+                                            title: title,
+                                            artist: artist,
+                                            audioUrl: "",
+                                            thumbnailUrl: thumbnailUrl
+                                        )
+                                    }
                                 }
                             }) {
                                 // The visual content of the download button

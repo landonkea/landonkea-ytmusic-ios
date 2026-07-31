@@ -308,13 +308,29 @@ struct AlbumView: View {
     private func playTrack(_ track: SearchResult, tracks: [SearchResult], startIndex: Int) async {
         do {
             let info = try await apiClient.getPlayerInfo(videoId: track.id)
-            audioPlayer.play(info: info)
+            await audioPlayer.play(
+                videoId: info.videoId,
+                title: info.title,
+                artist: info.artist,
+                thumbnailUrl: info.thumbnailUrl,
+                audioUrl: info.audioUrl,
+                duration: info.duration
+            )
             
             // Queue remaining tracks after the current one
             for i in (startIndex + 1)..<tracks.count {
                 let nextTrack = tracks[i]
                 if let nextInfo = try? await apiClient.getPlayerInfo(videoId: nextTrack.id) {
-                    audioPlayer.addToQueue(nextInfo)
+                    // Convert PlayerInfo to NowPlaying for the queue.
+                    // NowPlaying is the queue's data type.
+                    audioPlayer.addToQueue(NowPlaying(
+                        id: nextInfo.videoId,
+                        title: nextInfo.title,
+                        artist: nextInfo.artist,
+                        thumbnailUrl: nextInfo.thumbnailUrl,
+                        duration: nextInfo.duration,
+                        audioUrl: nextInfo.audioUrl
+                    ))
                 }
             }
         } catch {

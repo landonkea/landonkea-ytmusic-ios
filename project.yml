@@ -1,0 +1,83 @@
+# ── project.yml — xcodegen spec for YTMusicApp (iOS) ────────────
+# This file is the SOURCE of truth for the Xcode project.
+# To generate (or regenerate) the .xcodeproj:
+#     xcodegen generate
+# NOTE: The .xcodeproj is gitignored — always generate it locally
+# with the command above after cloning or changing this file.
+
+# "name:" is the Xcode project name.
+name: YTMusicApp
+
+# "options:" controls how the project is generated.
+options:
+  # Minimum iOS version this app supports.
+  deploymentTarget:
+    iOS: "17.0"
+  # Create folders that contain no files so the navigator stays tidy.
+  generateEmptyDirectories: true
+
+# "targets:" defines what gets built.
+targets:
+  # ── YTMusicApp — the application target ──────────────────────
+  # NOTE: The API layer (YTMusicAPI) is compiled INTO this target
+  # instead of a separate framework.  The code was written as one
+  # module (no `public` access modifiers), so keeping a single
+  # module avoids a large, error-prone `public` refactor.
+  YTMusicApp:
+    type: application
+    platform: iOS
+    # All app source files (views, services, utilities) AND the
+    # API layer sources (client, models) — one module total.
+    sources:
+      - path: Sources/YTMusicApp
+      - path: Sources/YTMusicAPI
+    # Apple SDK frameworks the app uses (imported in its source files):
+    dependencies:
+      # AVFoundation — audio playback (AVPlayer in AudioPlayer).
+      - sdk: AVFoundation.framework
+      # MediaPlayer — lock screen / Control Center integration
+      # (MPRemoteCommandCenter in AudioPlayer).
+      - sdk: MediaPlayer.framework
+      # BackgroundTasks — BGTaskScheduler for background refresh.
+      - sdk: BackgroundTasks.framework
+      # Intents — Siri shortcuts (INInteraction, INPlayMediaIntent).
+      - sdk: Intents.framework
+      # Speech — voice search (SFSpeechRecognizer in VoiceSearchManager).
+      - sdk: Speech.framework
+      # UIKit — used alongside SwiftUI for some components.
+      - sdk: UIKit.framework
+    settings:
+      base:
+        # The unique bundle identifier for the app.
+        PRODUCT_BUNDLE_IDENTIFIER: com.landonkea.ytmusic
+        # Generate a basic Info.plist automatically (Xcode fills in
+        # the standard keys like bundle id, version, etc.).
+        GENERATE_INFOPLIST_FILE: YES
+        # The app uses SwiftUI @main — no storyboard needed.
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        # Portrait + landscape orientations both supported.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # App display name shown under the icon.
+        INFOPLIST_KEY_CFBundleDisplayName: "YT Music"
+        # Voice search uses on-device speech recognition — iOS requires
+        # this usage string or the app crashes at the first request.
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Voice search lets you search for songs, artists, and albums by speaking instead of typing."
+        # Voice search records audio through the microphone — required usage string.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Voice search needs microphone access to hear your spoken search."
+        # Only build for the device architectures Xcode runs on.
+        ONLY_ACTIVE_ARCH: YES
+        # Signing for the simulator — no team needed for local builds.
+        CODE_SIGN_STYLE: Automatic
+        # SwiftUI lifecycle with a modern deployment target.
+        SWIFT_VERSION: "5.0"
+
+# "schemes:" defines the build/run scheme used by Xcode's toolbar.
+schemes:
+  YTMusicApp:
+    build:
+      targets:
+        YTMusicApp: all
+    run:
+      config: Debug
+    test:
+      config: Debug

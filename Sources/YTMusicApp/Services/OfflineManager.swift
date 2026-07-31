@@ -76,7 +76,11 @@ class OfflineManager: NSObject, ObservableObject {
     
     // MARK: - Initialization
     
-    init() {
+    override init() {
+        // We override NSObject's init() because OfflineManager
+        // subclasses NSObject (for URLSessionDownloadDelegate).
+        // The 'override' keyword is required by Swift.
+        //
         // Get the app's Documents directory
         // FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
         // returns the Documents directory for the current user.
@@ -85,6 +89,9 @@ class OfflineManager: NSObject, ObservableObject {
         self.documentsPath = documents
         self.downloadsPath = documents.appendingPathComponent("Downloads")
         self.indexFilePath = documents.appendingPathComponent("downloads.json")
+        
+        // Call super.init() AFTER all stored properties are set.
+        super.init()
         
         // Create the Downloads directory if it doesn't exist
         try? FileManager.default.createDirectory(at: downloadsPath, withIntermediateDirectories: true)
@@ -95,7 +102,6 @@ class OfflineManager: NSObject, ObservableObject {
         // Set up the background URL session
         // Background sessions use a unique identifier string so iOS can
         // reconnect to the same session when the app relaunches.
-        super.init()
         
         // Background configuration allows downloads to continue when the app
         // is suspended or in the background. The system manages the download
@@ -363,14 +369,14 @@ extension OfflineManager: URLSessionDownloadDelegate {
         guard totalBytesExpectedToWrite > 0 else { return }
         let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
         
-        // Look up the video ID for this task
+        // Look up the video ID and update the published dictionary.
+        // We do this on the main actor (inside DispatchQueue.main.async)
+        // because taskIdToVideoId and downloading are main-actor-isolated.
         let taskId = downloadTask.taskIdentifier
-        let videoId = taskIdToVideoId[taskId]
-        
-        // Dispatch to the main actor to update the published property
         DispatchQueue.main.async { [weak self] in
-            guard let videoId = videoId else { return }
-            self?.downloading[videoId] = progress
+            guard let self = self else { return }
+            guard let videoId = self.taskIdToVideoId[taskId] else { return }
+            self.downloading[videoId] = progress
         }
     }
     
@@ -385,18 +391,11 @@ extension OfflineManager: URLSessionDownloadDelegate {
     ) {
         let taskId = downloadTask.taskIdentifier
         
-        // Resume the continuation with the temporary file URL
-        if let continuation = MainActor.runSync(operation: { () -> CheckedContinuation<URL, Error>? in
-            // We need to get the continuation from the dictionary
-            // and remove it to avoid reusing it
-            return nil  // We'll handle this differently
-        }) {
-            // This approach won't work because MainActor.runSync can deadlock
-        }
-        
-        // Instead, we post a notification and let the async method handle it
-        // Actually, let's use a different approach: store the temp URL and
-        // notify the continuation
+        // Get the temp file URL to the main actor, where the
+        // continuation dictionary lives, and resume the continuation.
+        // (The removed code tried MainActor.runSync, which does not
+        // exist — DispatchQueue.main.async is the correct approach
+        // and avoids deadlocks.)
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             if let continuation = self.downloadContinuations.removeValue(forKey: taskId) {

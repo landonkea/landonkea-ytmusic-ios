@@ -945,8 +945,9 @@ class AudioPlayer: ObservableObject {
                 let remaining = endDate.timeIntervalSinceNow
                 
                 if remaining <= 0 {
-                    // Timer expired — pause playback
-                    self.pause()
+                    // Timer expired — pause playback.
+                    // togglePlayPause() pauses since a song is playing.
+                    self.togglePlayPause()
                     self.stopSleepTimer()
                 } else {
                     // Update the countdown display
@@ -1106,9 +1107,16 @@ class AudioPlayer: ObservableObject {
             return .success
         }
         
-        // Scrubbing (dragging the progress bar on lock screen / Control Center)
-        // position.positionTime = the time the user dragged to (in seconds)
-        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] position in
+        // Scrubbing (dragging the progress bar on lock screen / Control Center).
+        // The handler receives a generic MPRemoteCommandEvent, so we cast it
+        // to MPChangePlaybackPositionCommandEvent to read positionTime
+        // (the time the user dragged to, in seconds).
+        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
+            // Cast the generic event to the concrete scrubbing event
+            guard let position = event as? MPChangePlaybackPositionCommandEvent else {
+                // If the cast fails, ignore the command
+                return .commandFailed
+            }
             // Convert absolute time to a fraction (0.0-1.0) for our seek method
             self?.seek(to: position.positionTime / (self?.duration ?? 1))
             return .success

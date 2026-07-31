@@ -136,7 +136,15 @@ enum PlayerState {
 /// We implement == to compare only the `id` field. This means two NowPlaying
 /// objects with the same video ID are considered equal, even if other fields
 /// differ. This is useful for finding songs in the queue by ID.
-struct NowPlaying: Equatable {
+///
+/// CODEPABLE CONFORMANCE:
+/// We also conform to Codable so a Playlist (which stores [NowPlaying]) can
+/// be saved to / loaded from JSON on disk.
+///
+/// IDENTIFIABLE CONFORMANCE:
+/// We conform to Identifiable (using the existing `id` video ID property)
+/// so ForEach can loop over [NowPlaying] directly.
+struct NowPlaying: Equatable, Codable, Identifiable {
     /// YouTube video ID — unique identifier for this song
     let id: String
     /// Song title (e.g. "Bohemian Rhapsody")

@@ -87,14 +87,16 @@ struct DownloadsView: View {
                                 Spacer()
                                 // ^ Pushes the stats to the right
 
-                                // Show count and total size
-                                Text("\(offlineManager.downloads.count) songs • \(ByteCountFormatter.string(
-                                    // ^ Number of songs + a bullet separator
+                                // Show count and total size.
+                                // The storage size is computed before the
+                                // string so the ByteCountFormatter call
+                                // stays out of string interpolation
+                                // (keeps the parser happy and the code readable).
+                                let storageText = ByteCountFormatter.string(
                                     fromByteCount: offlineManager.totalStorageUsed(),
-                                    // ^ Convert the byte total into a human-readable string (e.g. "45.2 MB")
                                     countStyle: .file
-                                    // ^ Use the file-style formatting (bytes, KB, MB, GB)
-                                ))")
+                                )
+                                Text("\(offlineManager.downloads.count) songs • \(storageText)")
                                 .foregroundColor(.secondary)
                                 // ^ Grey text for the statistics
                             }
@@ -184,22 +186,25 @@ struct DownloadsView: View {
             return
         }
 
-        // Play from local cache
-        audioPlayer.playLocal(
-            // ^ Call the player with a local file instead of streaming
-            videoId: song.videoId,
-            // ^ The unique YouTube video identifier
-            title: song.title,
-            // ^ The song title for the now-playing display
-            artist: song.artist,
-            // ^ The artist name for the now-playing display
-            thumbnailUrl: song.thumbnailUrl,
-            // ^ The album art URL for the now-playing display
-            localURL: localURL,
-            // ^ The local file URL — player reads from disk, not the network
-            duration: 0 // Duration unknown for cached songs, AudioPlayer will detect it
-            // ^ Pass 0 so the player auto-detects the track length from the file
-        )
+        // Play from local cache.
+        // playLocal is async, so we wrap the call in a Task.
+        Task {
+            await audioPlayer.playLocal(
+                // ^ Call the player with a local file instead of streaming
+                videoId: song.videoId,
+                // ^ The unique YouTube video identifier
+                title: song.title,
+                // ^ The song title for the now-playing display
+                artist: song.artist,
+                // ^ The artist name for the now-playing display
+                thumbnailUrl: song.thumbnailUrl,
+                // ^ The album art URL for the now-playing display
+                localURL: localURL,
+                // ^ The local file URL — player reads from disk, not the network
+                duration: 0 // Duration unknown for cached songs, AudioPlayer will detect it
+                // ^ Pass 0 so the player auto-detects the track length from the file
+            )
+        }
     }
 }
 

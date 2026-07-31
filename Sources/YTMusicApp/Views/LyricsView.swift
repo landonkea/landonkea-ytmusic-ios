@@ -105,6 +105,8 @@ struct LyricsView: View {
                     
                     SyncedLyricsDisplay(
                         lyrics: Lyrics(
+                            trackName: lyrics.trackName,
+                            artistName: lyrics.artistName,
                             plainText: lyrics.plainText,
                             syncedLines: displayLines
                         ),
@@ -121,6 +123,8 @@ struct LyricsView: View {
                     let displayText = showTranslated ? (translatedPlainText ?? lyrics.plainText) : lyrics.plainText
                     
                     PlainLyricsDisplay(lyrics: Lyrics(
+                        trackName: lyrics.trackName,
+                        artistName: lyrics.artistName,
                         plainText: displayText,
                         syncedLines: nil
                     ))

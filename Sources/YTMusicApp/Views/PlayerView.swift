@@ -114,16 +114,12 @@ struct PlayerView: View {
                         // Share button — shares the song link via iOS share sheet
                         // ShareLink is SwiftUI's built-in way to share content.
                         // It presents the standard iOS share sheet (AirDrop, Messages, etc.)
+                        // NOTE: The preview image is omitted because ShareLink's
+                        // preview only accepts Transferable types, and AsyncImage
+                        // does not conform to Transferable.
                         ShareLink(
                             item: URL(string: "https://music.youtube.com/watch?v=\(song.id)")!,
-                            preview: SharePreview(
-                                song.title,
-                                image: AsyncImage(url: URL(string: song.thumbnailUrl)) { image in
-                                    image.resizable()
-                                } placeholder: {
-                                    Color.gray
-                                }
-                            )
+                            preview: SharePreview(song.title)
                         ) {
                             Image(systemName: "square.and.arrow.up")
                                 .font(.title2)

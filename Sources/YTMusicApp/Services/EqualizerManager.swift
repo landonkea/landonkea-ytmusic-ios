@@ -43,7 +43,8 @@ class EqualizerManager: ObservableObject {
     private var audioEngine: AVAudioEngine?
     
     /// The equalizer node with 10 frequency bands.
-    private var equalizerNode: AVAudioEQNode?
+    /// AVAudioUnitEQ is the real AVFoundation class for an EQ node.
+    private var equalizerNode: AVAudioUnitEQ?
     
     // MARK: - Frequency Band Definitions
     
