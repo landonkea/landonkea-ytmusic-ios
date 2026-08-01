@@ -45,6 +45,16 @@ struct SongDetailView: View {
     /// The liked songs manager — tracks which songs the user has liked
     @EnvironmentObject var likedSongs: LikedSongsManager
     
+    /// The API client — used to fetch a real streaming/download URL.
+    /// The download button needs the stream URL from the player endpoint
+    /// (search results only carry display info, not the audio URL).
+    @EnvironmentObject var apiClient: APIClient
+    
+    /// Whether a download is currently in progress.
+    /// When true, the download button shows a spinner and is disabled
+    /// so the user can't start two downloads for the same song.
+    @State private var isDownloading = false
+    
     /// Whether the playlist picker sheet is showing
     /// When true, a sheet slides up showing the user's playlists to choose from
     @State private var showPlaylistPicker = false
@@ -248,28 +258,58 @@ struct SongDetailView: View {
                             // Download button — saves song for offline playback
                             Button(action: {
                                 // Only download if the song isn't already downloaded
-                                if !offlineManager.isDownloaded(videoId) {
-                                    // download() is async, so wrap the call in a Task.
-                                    // NOTE: This screen only has display info — no
-                                    // stream URL — so audioUrl is empty and the
-                                    // download will not actually succeed here.
-                                    Task {
+                                // or currently being downloaded
+                                guard !offlineManager.isDownloaded(videoId),
+                                      !offlineManager.isDownloading(videoId),
+                                      !isDownloading else { return }
+                                
+                                // Mark this song as downloading so the UI shows a spinner
+                                isDownloading = true
+                                
+                                // The download flow has three steps:
+                                // 1. Ask YouTube for a fresh stream URL (the player
+                                //    endpoint returns a temporary streaming URL —
+                                //    search results don't include one).
+                                // 2. Hand that URL to OfflineManager, which downloads
+                                //    the audio in the background and stores it on disk.
+                                // 3. Clear the downloading flag when done.
+                                Task {
+                                    do {
+                                        // Get the real audio stream URL for this song.
+                                        // getPlayerInfoForDownload uses the user's
+                                        // "download quality" setting from Settings.
+                                        let info = try await apiClient.getPlayerInfoForDownload(videoId: videoId)
+                                        
+                                        // Start the actual download with the real URL
                                         await offlineManager.download(
                                             videoId: videoId,
                                             title: title,
                                             artist: artist,
-                                            audioUrl: "",
+                                            audioUrl: info.audioUrl,
                                             thumbnailUrl: thumbnailUrl
                                         )
+                                    } catch {
+                                        // Log the failure so it's debuggable in the console
+                                        print("Download failed for \(title): \(error)")
                                     }
+                                    
+                                    // Turn off the spinner (success or failure)
+                                    isDownloading = false
                                 }
                             }) {
                                 // The visual content of the download button
                                 HStack {
-                                    // Shows a checkmark if already downloaded, or a down arrow if not
-                                    Image(systemName: offlineManager.isDownloaded(videoId) ? "checkmark.circle.fill" : "arrow.down.circle")
-                                    // Shows "Downloaded" if already saved, or "Download" if not
-                                    Text(offlineManager.isDownloaded(videoId) ? "Downloaded" : "Download")
+                                    // If a download is in progress, show a small spinner
+                                    if isDownloading {
+                                        ProgressView()
+                                            // Keeps the spinner small so it doesn't grow the button
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        // Shows a checkmark if already downloaded, or a down arrow if not
+                                        Image(systemName: offlineManager.isDownloaded(videoId) ? "checkmark.circle.fill" : "arrow.down.circle")
+                                    }
+                                    // Shows "Downloaded" if already saved, "Downloading..." if in progress, or "Download"
+                                    Text(offlineManager.isDownloaded(videoId) ? "Downloaded" : (isDownloading ? "Downloading..." : "Download"))
                                 }
                                 // Makes the button stretch to fill its share of the row
                                 .frame(maxWidth: .infinity)

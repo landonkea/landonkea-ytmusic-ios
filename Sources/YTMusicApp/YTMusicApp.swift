@@ -57,9 +57,12 @@ struct YTMusicApp: App {
     /// The stats manager — tracks listening statistics.
     @StateObject private var statsManager = StatsManager()
     
-    /// Set up the shared play count manager for AudioPlayer to access.
+    /// Set up the shared managers for AudioPlayer to access.
     init() {
         PlayCountManager.shared = playCountManager
+        // The audio player checks EqualizerManager.shared to decide whether
+        // to route local playback through the equalizer engine.
+        EqualizerManager.shared = equalizer
     }
     
     var body: some Scene {

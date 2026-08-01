@@ -1,0 +1,404 @@
+// EqualizerEngine.swift — Plays local audio files through a real 10-band
+// equalizer using AVAudioEngine.
+//
+// WHY THIS EXISTS:
+// AVPlayer (used for normal playback) does NOT let apps insert an
+// equalizer into its audio pipeline. So this class provides an
+// ALTERNATIVE playback path that uses AVAudioEngine + AVAudioPlayerNode +
+// AVAudioUnitEQ. AudioPlayer uses this engine only when:
+//   1. The user has the equalizer turned ON, AND
+//   2. The song is being played from a LOCAL file (a downloaded song).
+// Streamed songs keep using AVPlayer, which cannot be equalized on iOS.
+//
+// AUDIO GRAPH:
+//   AVAudioPlayerNode  →  AVAudioUnitTimePitch (playback speed)  →
+//   AVAudioUnitEQ (10 bands)  →  mainMixerNode  →  output
+//
+// All methods are marked @MainActor because the engine is driven from the
+// UI thread (timers, play/pause buttons, sliders).
+
+import AVFoundation
+
+// MARK: - Equalizer Engine
+
+@MainActor
+class EqualizerEngine {
+    
+    // MARK: - Callbacks
+    
+    /// Called ~4 times per second with the current playback position (seconds).
+    /// AudioPlayer uses this to update the progress bar and Control Center.
+    var onTimeUpdate: ((Double) -> Void)?
+    
+    /// Called when the current file finishes playing naturally (not stopped).
+    /// AudioPlayer uses this to advance to the next song in the queue.
+    var onSongEnded: (() -> Void)?
+    
+    // MARK: - Private Properties
+    
+    /// The audio engine that runs the whole audio graph.
+    /// Created lazily the first time we play a file.
+    private let engine = AVAudioEngine()
+    
+    /// The player node — the "source" that feeds audio into the graph.
+    /// It reads the audio file and pushes buffers down the chain.
+    private let playerNode = AVAudioPlayerNode()
+    
+    /// The time pitch unit — adjusts playback speed (0.5x, 1.0x, 2.0x).
+    /// AVPlayer has built-in rate control, but AVAudioPlayerNode does not,
+    /// so we use this AVAudioUnit to get the same feature.
+    private let timePitch = AVAudioUnitTimePitch()
+    
+    /// The actual equalizer node with 10 frequency bands.
+    /// This is the node that makes the EQ real — it boosts/cuts frequencies.
+    private let eqNode = AVAudioUnitEQ(numberOfBands: 10)
+    
+    /// The currently open audio file being played.
+    /// Kept as a property so we can re-schedule segments for seeking.
+    private var audioFile: AVAudioFile?
+    
+    /// True when the user (or AudioPlayer) has stopped playback on purpose.
+    /// Used to ignore the completion handler when the stop was intentional —
+    /// otherwise stopping a song would look like it "ended naturally".
+    private var isStopping = false
+    
+    /// Prevents the song-ended callback from firing more than once per song.
+    private var hasEnded = false
+    
+    /// A counter that identifies the CURRENT scheduled segment.
+    /// Each time we (re)schedule a segment — including after a seek — we
+    /// bump this counter. Completion callbacks from OLD segments capture the
+    /// counter value from when they were scheduled; if the value no longer
+    /// matches, the callback is stale (it was cancelled by a seek) and is
+    /// ignored. This prevents a seek from being mistaken for a song ending.
+    private var segmentID = 0
+    
+    /// The timer that polls the playback position and fires onTimeUpdate.
+    private var timeTimer: Timer?
+    
+    /// The playback speed (0.5 - 2.0). 1.0 = normal speed.
+    private var rate: Double = 1.0
+    
+    /// The output volume (0.0 - 1.0). Applied to the main mixer node.
+    private var volume: Double = 1.0
+    
+    /// The current EQ gains in decibels (-12 to +12), one per band.
+    private var gains: [Double] = Array(repeating: 0.0, count: 10)
+    
+    /// The center frequency for each of the 10 EQ bands.
+    /// Must match EqualizerManager.bandFrequencies so the sliders line up.
+    private var frequencies: [Double] = EqualizerManager.bandFrequencies
+    
+    /// The sample rate of the current audio file (frames per second).
+    /// Used to convert between seconds and sample frames when seeking.
+    private var sampleRate: Double = 44100
+    
+    /// The total duration of the current file in seconds.
+    /// Used by the time-pitch unit and for seek calculations.
+    private var fileDuration: Double = 0
+    
+    // MARK: - Public Playback Controls
+    
+    /// Start playing a local audio file through the equalizer.
+    ///
+    /// - Parameters:
+    ///   - url: The local file URL of the downloaded song.
+    ///   - rate: Playback speed (1.0 = normal).
+    ///   - volume: Output volume (0.0 - 1.0).
+    ///   - gains: 10 EQ gain values in decibels (-12 to +12).
+    ///   - frequencies: 10 center frequencies for the EQ bands.
+    ///   - completion: Called once the file is open and playing, with the
+    ///                 file's duration in seconds (0 if setup failed).
+    func playFile(
+        url: URL,
+        rate: Double,
+        volume: Double,
+        gains: [Double],
+        frequencies: [Double],
+        completion: @escaping (Double) -> Void
+    ) {
+        // Reset the ended-flag so a fresh song can end cleanly later
+        hasEnded = false
+        // Reset the intentional-stop flag so completion handlers are honored
+        isStopping = false
+        // Store the playback speed and volume for later use
+        self.rate = rate
+        self.volume = volume
+        // Store the EQ gains and frequencies (sliders → these values)
+        self.gains = gains
+        self.frequencies = frequencies
+        
+        // Open the audio file so we can read its frames and sample rate
+        guard let file = try? AVAudioFile(forReading: url) else {
+            // If the file can't be opened, report 0 duration so the caller
+            // can fall back to whatever it knows
+            completion(0)
+            return
+        }
+        
+        // Keep a reference to the file (needed for seeking)
+        self.audioFile = file
+        // Remember the sample rate for second↔frame conversions
+        self.sampleRate = file.processingFormat.sampleRate
+        // Compute the duration: total frames ÷ frames per second
+        self.fileDuration = Double(file.length) / sampleRate
+        
+        // Stop any existing playback and clear the graph before reconfiguring
+        stopInternal()
+        
+        // Build the audio graph (connect nodes in the right order)
+        buildGraph(format: file.processingFormat)
+        // Configure the EQ bands with the chosen frequencies and gains
+        configureEQ()
+        // Configure the playback speed
+        timePitch.rate = Float(rate)
+        // Configure the output volume
+        engine.mainMixerNode.outputVolume = Float(volume)
+        
+        // Schedule the entire file (from frame 0 to the end) for playback
+        scheduleSegment(startingFrame: 0)
+        
+        // Prepare the engine (allocates resources) and start it running
+        engine.prepare()
+        do {
+            try engine.start()
+        } catch {
+            // If the engine can't start (rare), report failure
+            print("EqualizerEngine failed to start: \(error)")
+            completion(0)
+            return
+        }
+        
+        // Start the player node — audio now flows through the EQ
+        playerNode.play()
+        // Start polling the playback position for progress updates
+        startTimeTimer()
+        
+        // Let the caller know how long the song is
+        completion(fileDuration)
+    }
+    
+    /// Pause playback (keep the position so resume() can continue from here).
+    func pause() {
+        // AVAudioPlayerNode.pause() stops output but keeps the playhead
+        playerNode.pause()
+        // Stop the timer while paused (no movement to report)
+        stopTimeTimer()
+    }
+    
+    /// Resume playback from the paused position.
+    func resume() {
+        // Continue playing from where pause() left off
+        playerNode.play()
+        // Restart the position polling timer
+        startTimeTimer()
+    }
+    
+    /// Stop playback entirely and tear down the engine.
+    /// After calling this, the engine is no longer usable until playFile().
+    func stop() {
+        // Mark the stop as intentional so the completion handler is ignored
+        isStopping = true
+        // Stop everything and release the graph
+        stopInternal()
+    }
+    
+    /// Jump to a specific position in the song.
+    ///
+    /// - Parameter seconds: The absolute position to jump to (0 = start).
+    func seek(toSeconds seconds: Double) {
+        // Guard: we can't seek without an open file
+        guard let file = audioFile, fileDuration > 0 else { return }
+        
+        // Clamp the target into the valid range [0, duration]
+        let clamped = min(max(seconds, 0), fileDuration)
+        
+        // Stop the node — this also clears any scheduled buffers
+        playerNode.stop()
+        
+        // Convert the seconds target to a sample frame index
+        let startingFrame = AVAudioFramePosition(clamped * sampleRate)
+        // Re-schedule the file from that frame to the end
+        scheduleSegment(startingFrame: startingFrame)
+        
+        // Resume playing from the new position
+        if !playerNode.isPlaying {
+            playerNode.play()
+        }
+        
+        // Immediately report the new position to the caller
+        onTimeUpdate?(clamped)
+    }
+    
+    /// Change the playback speed (0.5 - 2.0).
+    func setRate(_ newRate: Double) {
+        // Store it so it survives future plays
+        rate = newRate
+        // Apply it live to the time-pitch unit
+        timePitch.rate = Float(newRate)
+    }
+    
+    /// Change the output volume (0.0 - 1.0).
+    func setVolume(_ newVolume: Double) {
+        // Store it for later use
+        volume = newVolume
+        // Apply it to the main mixer (the final output stage)
+        engine.mainMixerNode.outputVolume = Float(newVolume)
+    }
+    
+    /// Update the EQ band gains live (while a song is playing).
+    ///
+    /// - Parameter newGains: 10 gain values in decibels (-12 to +12).
+    func setGains(_ newGains: [Double]) {
+        // Store the new values
+        gains = newGains
+        // Apply them to the EQ node's bands immediately
+        for (index, band) in eqNode.bands.enumerated() {
+            // Guard against a mismatched array length
+            if index < newGains.count {
+                // Set the gain in decibels on this band
+                band.gain = Float(newGains[index])
+            }
+        }
+    }
+    
+    // MARK: - Private Setup Helpers
+    
+    /// Connect all nodes in the audio graph in the correct order:
+    /// player → timePitch → eq → mainMixer → output.
+    ///
+    /// - Parameter format: The audio format of the file being played.
+    ///                      All nodes use this format so data flows cleanly.
+    private func buildGraph(format: AVAudioFormat) {
+        // Player feeds into the time-pitch unit
+        engine.connect(playerNode, to: timePitch, format: format)
+        // Time-pitch feeds into the equalizer
+        engine.connect(timePitch, to: eqNode, format: format)
+        // Equalizer feeds into the main mixer (final output stage)
+        engine.connect(eqNode, to: engine.mainMixerNode, format: format)
+    }
+    
+    /// Configure the 10 EQ bands with their frequencies and gains.
+    private func configureEQ() {
+        // Loop over every band in the equalizer node
+        for (index, band) in eqNode.bands.enumerated() {
+            // Guard against a band without a matching frequency
+            guard index < frequencies.count else { break }
+            
+            // Set the center frequency (e.g. 32, 1000, 16000 Hz)
+            band.frequency = Float(frequencies[index])
+            // Parametric filters are the standard "shelf/peak" EQ shape
+            band.filterType = .parametric
+            // Bandwidth of 0.5 octaves = a fairly narrow, natural curve
+            band.bandwidth = 0.5
+            // Apply this band's gain (0.0 = flat when gains are all zero)
+            if index < gains.count {
+                band.gain = Float(gains[index])
+            }
+        }
+    }
+    
+    /// Schedule a segment of the audio file for playback.
+    ///
+    /// - Parameter startingFrame: The frame index to start from.
+    ///                            The segment runs to the end of the file.
+    private func scheduleSegment(startingFrame: AVAudioFramePosition) {
+        // Guard: we need a file to schedule
+        guard let file = audioFile else { return }
+        
+        // Bump the generation counter so any OLD scheduled segments become
+        // stale and their completion callbacks are ignored (they were
+        // cancelled by this reschedule)
+        segmentID += 1
+        // Capture the current generation for THIS segment
+        let myID = segmentID
+        
+        // Figure out how many frames are left in the file from this point
+        let framesRemaining = AVAudioFrameCount(file.length - startingFrame)
+        
+        // Schedule the remaining segment; when it finishes, notify the caller
+        // NOTE: we use the `completionCallbackType:` variant so the callback
+        // receives the reason (.dataPlayedBack = finished) in its argument.
+        playerNode.scheduleSegment(
+            file,
+            startingFrame: startingFrame,
+            frameCount: framesRemaining,
+            at: nil,
+            completionCallbackType: .dataPlayedBack,
+            completionHandler: { [weak self] (callbackType: AVAudioPlayerNodeCompletionCallbackType) in
+            // This closure runs on an internal audio thread
+            Task { @MainActor [weak self] in
+                // Ignore completions caused by an intentional stop
+                guard let self = self, !self.isStopping else { return }
+                // Ignore completions from stale (cancelled-by-seek) segments
+                guard myID == self.segmentID else { return }
+                // Only treat "finished playing" as a song end
+                if callbackType == .dataPlayedBack || callbackType == .dataConsumed {
+                    // Make sure we only fire the ended callback once
+                    if !self.hasEnded {
+                        self.hasEnded = true
+                        // Tell the caller the song is done
+                        self.onSongEnded?()
+                    }
+                }
+            }
+        })  // close the completionHandler closure AND the scheduleSegment call
+    }
+    
+    /// Start a repeating timer that polls the playback position.
+    /// Fires onTimeUpdate ~4 times per second (every 0.25s).
+    private func startTimeTimer() {
+        // Guard: don't create a second timer if one is already running
+        guard timeTimer == nil else { return }
+        
+        // Create a repeating timer on the main run loop
+        timeTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            // The timer closure runs on the main thread
+            Task { @MainActor [weak self] in
+                // Report the current playback position to the caller
+                self?.onTimeUpdate?(self?.currentTime ?? 0)
+            }
+        }
+    }
+    
+    /// Stop the position-polling timer.
+    private func stopTimeTimer() {
+        // Invalidate the timer so it stops firing
+        timeTimer?.invalidate()
+        // Clear the reference so startTimeTimer can create a new one
+        timeTimer = nil
+    }
+    
+    /// Tear down playback: stop the timer, stop the nodes, stop the engine.
+    private func stopInternal() {
+        // Stop polling the playback position
+        stopTimeTimer()
+        // Stop the player node (halts audio output)
+        playerNode.stop()
+        // Stop the engine and disconnect everything
+        engine.stop()
+        // Release the file reference so it can be closed by the system
+        audioFile = nil
+    }
+    
+    // MARK: - Current Position
+    
+    /// The current playback position in seconds.
+    ///
+    /// HOW IT'S CALCULATED:
+    /// AVAudioPlayerNode tracks how many sample frames it has rendered.
+    /// lastRenderTime = the node's internal clock at the last render.
+    /// playerTime(forNodeTime:) converts that clock value into sample frames.
+    /// Dividing frames by the sample rate gives seconds.
+    private var currentTime: Double {
+        // Get the node's latest render time
+        guard let nodeTime = playerNode.lastRenderTime,
+              // Convert it to a player time (sample frames + sample rate)
+              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else {
+            // If either conversion fails, report 0
+            return 0
+        }
+        // Convert sample frames to seconds
+        return Double(playerTime.sampleTime) / playerTime.sampleRate
+    }
+}

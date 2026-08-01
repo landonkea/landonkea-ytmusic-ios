@@ -3,7 +3,8 @@ import SwiftUI
 
 // MARK: - Equalizer Manager
 
-/// Manages audio equalization effects using AVAudioEngine.
+/// Manages equalizer settings (presets, band gains) and pushes them
+/// to the active playback engine.
 ///
 /// WHAT IS AN EQUALIZER?
 /// An equalizer (EQ) adjusts the volume of different frequency ranges in audio.
@@ -12,17 +13,28 @@ import SwiftUI
 /// - Treble (high frequencies): 4kHz-16kHz — cymbals, hi-hats, sparkle
 ///
 /// HOW IT WORKS:
-/// AVAudioEngine processes audio in real-time. We insert an AVAudioEQNode
-/// (equalizer) into the audio chain. The EQ has 10 frequency bands that we
-/// can boost (make louder) or cut (make quieter) by up to ±12 decibels.
+/// This class is the "brains" of the EQ — it stores the settings and
+/// exposes methods the UI calls (applyPreset, setBand, toggle). It does
+/// NOT own the audio processing itself. The actual equalizer lives in
+/// EqualizerEngine (AVAudioUnitEQ inside an AVAudioEngine), which is used
+/// by AudioPlayer for LOCAL file playback. This manager pushes the gains
+/// to that engine through the `onGainsChanged` callback.
+///
+/// WHY NOT EVERYTHING?
+/// iOS does not let apps insert an equalizer into AVPlayer's audio path.
+/// Streamed songs therefore cannot be equalized — the equalizer only
+/// affects downloaded (offline) songs played through EqualizerEngine.
 ///
 /// We provide presets (Flat, Bass Boost, etc.) that set all 10 bands at once
 /// for common listening scenarios.
-///
-/// IMPORTANT: AVAudioEngine processes audio at the system level, which means
-/// it works with ALL audio sources (streaming, local files, AirPlay). However,
-/// it requires careful setup to avoid conflicts with AVPlayer.
 class EqualizerManager: ObservableObject {
+    
+    // MARK: - Shared Instance
+    
+    /// The single app-wide equalizer manager.
+    /// AudioPlayer looks this up when it needs to know whether the EQ is on
+    /// and what gains to apply. This mirrors the PlayCountManager.shared pattern.
+    static var shared: EqualizerManager?
     
     // MARK: - Published Properties
     
@@ -37,14 +49,12 @@ class EqualizerManager: ObservableObject {
     /// Range: -12.0 to +12.0 dB. 0.0 = no change (flat).
     @Published var bandGains: [Double] = Array(repeating: 0.0, count: 10)
     
-    // MARK: - Private Properties
+    // MARK: - Callback
     
-    /// The audio engine that processes audio in real-time.
-    private var audioEngine: AVAudioEngine?
-    
-    /// The equalizer node with 10 frequency bands.
-    /// AVAudioUnitEQ is the real AVFoundation class for an EQ node.
-    private var equalizerNode: AVAudioUnitEQ?
+    /// Called whenever the gains change (preset applied, band dragged, toggle).
+    /// AudioPlayer registers this to push the new gains into the live
+    /// EqualizerEngine node, so changes apply while a song is playing.
+    var onGainsChanged: (([Double]) -> Void)?
     
     // MARK: - Frequency Band Definitions
     
@@ -175,19 +185,16 @@ class EqualizerManager: ObservableObject {
         applyGainsToEQ(bandGains)
     }
     
-    /// Apply specific gain values to the equalizer node.
+    /// Apply specific gain values to the equalizer.
     ///
-    /// This is where the actual audio processing happens.
-    /// We create an AVAudioEngine (if needed), insert an AVAudioEQNode,
-    /// and set each band's gain.
+    /// The actual audio processing lives in EqualizerEngine (which owns the
+    /// AVAudioUnitEQ). This manager's job is to PUSH the new gains there,
+    /// via the onGainsChanged callback, so they take effect immediately
+    /// even while a song is playing.
     private func applyGainsToEQ(_ gains: [Double]) {
-        // AVAudioEngine setup requires careful handling with AVPlayer.
-        // For now, we store the gains and apply them when the audio session is configured.
-        // Full AVAudioEngine integration requires bridging with AVPlayer,
-        // which is complex and needs careful testing.
-        //
-        // The gains are stored and will be applied when the equalizer
-        // is fully integrated with the audio pipeline.
+        // Notify the active EqualizerEngine (set up by AudioPlayer)
+        // with the new gains, so its EQ node updates live
+        onGainsChanged?(gains)
     }
     
     /// Save equalizer settings to UserDefaults.

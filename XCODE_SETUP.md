@@ -1,32 +1,101 @@
 # Xcode Setup & Next Steps
 
-## When Xcode Is Installed
+## Current Setup (working, verified)
 
-### 1. Open the Project
+The Xcode project is **generated from `project.yml` with [xcodegen](https://github.com/yonaskolb/XcodeGen)**.
+`.xcodeproj` is gitignored, so it must be regenerated whenever source files are
+added/removed or `project.yml` changes.
+
+- **Single monolithic target** named `YTMusicApp` compiling BOTH
+  `Sources/YTMusicApp` and `Sources/YTMusicAPI` as one module.
+  The API types have no `public` access modifiers, so they cannot live in a
+  separate module.
+- **Bundle ID:** `com.landonkea.ytmusic`
+- **Deployment target:** iOS 17.0
+- **Privacy usage strings** live in `project.yml` (they must stay there — the
+  app crashes without `NSSpeechRecognitionUsageDescription` and
+  `NSMicrophoneUsageDescription`).
+
+### 1. Build & Run (command line)
 ```bash
-open -a Xcode /Users/landonkea/dev/landonkea-ytmusic-ios/Package.swift
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer   # required for every non-interactive build
+xcodegen generate                                                 # recreate the .xcodeproj
+xcodebuild -project YTMusicApp.xcodeproj -scheme YTMusicApp \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  -configuration Debug build
 ```
-This opens the Swift Package. You'll need to create an Xcode project or use `xcodegen` if a `.xcodeproj` is needed.
 
-### 2. First Build & Run
-1. Select an iOS simulator (iPhone 16 Pro recommended)
-2. Product → Run (Cmd+R)
-3. Fix any signing errors:
-   - Set Team to "None" or your Apple ID
-   - Bundle Identifier: `com.landonkea.ytmusic`
-4. If `YTMusicApp` target isn't found:
-   - Create a new iOS App target named `YTMusicApp`
-   - Set the SwiftUI lifecycle
-   - Set the minimum deployment target to iOS 17.0
-   - Point it to `Sources/YTMusicApp/YTMusicApp.swift` as the entry point
-   - Add `Sources/YTMusicAPI` as a local package dependency
-
-### 3. Run Tests
+### 2. Install & Launch on a Simulator
 ```bash
-# After Xcode project is set up:
-xcodebuild test -scheme YTMusicApp -destination 'platform=iOS Simulator,name=iPhone 16 Pro'
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+# Point APP at the DerivedData build product:
+APP=~/Library/Developer/Xcode/DerivedData/YTMusicApp-*/Build/Products/Debug-iphonesimulator/YTMusicApp.app
+xcrun simctl boot "iPhone 17" || true
+xcrun simctl install "iPhone 17" "$APP"
+xcrun simctl launch "iPhone 17" com.landonkea.ytmusic
+```
+
+### 3. Open in Xcode
+```bash
+xcodegen generate
+open YTMusicApp.xcodeproj
+```
+Product → Run (Cmd+R). If signing is needed, set your Apple ID team and the
+bundle ID stays `com.landonkea.ytmusic`.
+
+### 4. Run Tests
+```bash
+xcodebuild test -scheme YTMusicApp -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
 Or use the test navigator in Xcode.
+
+### Package.swift / Swift Package Manager
+`Package.swift` mirrors the single-module structure (one executable target that
+compiles both `Sources/YTMusicApp` and `Sources/YTMusicAPI`). It exists so the
+package layout stays valid and tools that parse the package work.
+
+**Note:** `swift build` on a Mac cannot produce a runnable iOS app — SwiftPM
+lacks a bundled iOS destination, so it cannot cross-link iOS executables. This
+is an Apple tooling limitation, not a project bug. The real build path is
+`xcodegen generate` + `xcodebuild` above.
+
+---
+
+## Resolved Gaps (log of known gaps that have been fixed)
+
+### SongDetailView download
+- **Before:** the download button called `offlineManager.download(...)` with the
+  thumbnail URL as the audio URL, so downloads had no real audio.
+- **Fixed:** the button now fetches a real stream URL via
+  `apiClient.getPlayerInfoForDownload(videoId:)` (a per-song download variant
+  of the player API) and passes that audio URL to
+  `offlineManager.download(videoId:title:artist:audioUrl:thumbnailUrl:)`.
+- The button shows a spinner + "Downloading..." and guards against starting a
+  second download for the same song.
+
+### Equalizer (real audio processing)
+- **Before:** `EqualizerManager.applyGainsToEQ()` was a stub — sliders updated
+  values but nothing reached the audio.
+- **Fixed:** new `Services/EqualizerEngine.swift` runs playback through an
+  `AVAudioEngine` graph (`playerNode → AVAudioUnitTimePitch → AVAudioUnitEQ(10
+  bands) → mainMixer`). It supports play/pause/resume/stop/seek, rate, volume,
+  EQ gain updates, a 0.25s position timer, and an end-of-song callback.
+- `AudioPlayer` now routes playback through the engine whenever EQ is enabled
+  AND the song is a local/downloaded file (`url.isFileURL`). Streamed songs
+  still use AVPlayer because AVPlayer cannot be equalized.
+- `EqualizerManager.shared` is wired in `YTMusicApp.init`; gain changes flow to
+  the active engine via an `onGainsChanged` callback.
+- **Known limitation:** because EQ requires the AVAudioEngine path, enabling EQ
+  affects only downloaded/local songs (which is also the only place real EQ is
+  technically possible on iOS today).
+
+### Package.swift / SPM structure
+- **Before:** two targets (`YTMusicApp` depending on `YTMusicAPI`), which could
+  never build because the API module's types are all internal.
+- **Fixed:** single executable target that compiles both source folders as one
+  module, matching the xcodegen setup.
+- See the "Package.swift / Swift Package Manager" note above for the macOS
+  cross-link limitation.
 
 ---
 
@@ -136,7 +205,9 @@ Or use the test navigator in Xcode.
 - Subscribe/unsubscribe via API
 
 #### 10.2 Audio Enhancements
-- EQ wiring (EqualizerManager has data, but `applyGainsToEQ()` is a stub)
+- ~~EQ wiring~~ **DONE** — `EqualizerEngine` (AVAudioEngine + 10-band
+  `AVAudioUnitEQ`) now processes local/downloaded files when EQ is enabled.
+  AVPlayer cannot be EQ'd, so streamed playback keeps using AVPlayer.
 - Tempo/pitch control (independent of speed)
 - Audio normalization / loudness
 - Skip silence

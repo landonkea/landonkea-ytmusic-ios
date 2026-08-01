@@ -91,6 +91,13 @@ class AudioPlayer: ObservableObject {
     /// AVPlayer handles buffering, decoding, and output to speakers.
     private var player: AVPlayer?
     
+    /// The equalizer playback engine (nil when the EQ isn't in use).
+    /// AVPlayer can't be equalized on iOS, so when the user enables the EQ
+    /// and plays a LOCAL (downloaded) song, we play it through this engine
+    /// instead, which routes audio through an AVAudioUnitEQ.
+    /// See EqualizerEngine.swift for the full explanation.
+    private var eqEngine: EqualizerEngine?
+    
     /// Token returned by addPeriodicTimeObserver().
     /// We need to save this so we can remove the observer later.
     /// If we don't remove it, it leaks memory.
@@ -163,6 +170,8 @@ class AudioPlayer: ObservableObject {
     func setPlaybackRate(_ rate: Double) {
         playbackRate = rate
         UserDefaults.standard.set(rate, forKey: "playbackRate")
+        // Apply immediately to the equalizer engine if it's active
+        eqEngine?.setRate(rate)
         // Apply immediately to the current player
         player?.rate = Float(rate)
     }
@@ -281,6 +290,14 @@ class AudioPlayer: ObservableObject {
     private func playSongFromLocal(_ song: NowPlaying, localURL: URL) async {
         stopPlayer()
         
+        // If the equalizer is enabled, play through the EQ engine so the
+        // 10-band equalizer actually processes the audio. AVPlayer cannot
+        // be equalized on iOS, so this is the only path where EQ works.
+        if let eq = EqualizerManager.shared, eq.isEnabled {
+            startEQPlayback(song, localURL: localURL)
+            return
+        }
+        
         // Create AVPlayerItem from local file (no network needed)
         let playerItem = AVPlayerItem(url: localURL)
         let newPlayer = AVPlayer(playerItem: playerItem)
@@ -319,6 +336,86 @@ class AudioPlayer: ObservableObject {
         // Track this song in recently played history
         addToRecentlyPlayed(song)
     }
+    
+    /// Play a local song through the equalizer engine.
+    ///
+    /// This is the ONLY path where the 10-band equalizer actually processes
+    /// audio, because AVPlayer (the normal player) doesn't allow inserting
+    /// an EQ node. It's used when the EQ is enabled and the song is local.
+    ///
+    /// The engine mirrors AudioPlayer's state (currentTime, duration, state)
+    /// through callbacks so the rest of the app doesn't care which backend
+    /// is playing.
+    private func startEQPlayback(_ song: NowPlaying, localURL: URL) {
+        // Stop any current AVPlayer playback first
+        stopPlayer()
+        
+        // Create a fresh equalizer engine for this song
+        let engine = EqualizerEngine()
+        
+        // Forward playback-position updates to the published currentTime,
+        // so progress bars and Control Center stay in sync
+        engine.onTimeUpdate = { [weak self] seconds in
+            // The engine calls this on the main actor; hop to MainActor
+            // to safely touch the published properties
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.currentTime = seconds
+                self.updateNowPlayingInfo()
+            }
+        }
+        
+        // Forward "song finished" to the normal handler so the queue
+        // advances (next song / repeat) exactly like AVPlayer playback
+        engine.onSongEnded = { [weak self] in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.handleSongEnded()
+            }
+        }
+        
+        // Keep a reference so pause/seek/volume/rate calls can reach it
+        self.eqEngine = engine
+        // Expose the song to the UI
+        self.currentSong = song
+        // Show a brief loading state while the engine spins up
+        self.state = .loading
+        
+        // Register a callback so EQ slider changes apply LIVE while playing.
+        // EqualizerManager calls this whenever the user drags a slider or
+        // taps a preset.
+        EqualizerManager.shared?.onGainsChanged = { [weak self] gains in
+            Task { @MainActor in
+                self?.eqEngine?.setGains(gains)
+            }
+        }
+        
+        // Pull the current EQ settings to hand to the engine
+        let gains = EqualizerManager.shared?.bandGains ?? Array(repeating: 0.0, count: 10)
+        let frequencies = EqualizerManager.bandFrequencies
+        
+        // Start playback. The completion fires once the file is open and
+        // playing, with the file's real duration in seconds.
+        engine.playFile(
+            url: localURL,
+            rate: playbackRate,
+            volume: volume,
+            gains: gains,
+            frequencies: frequencies
+        ) { [weak self] duration in
+            Task { @MainActor in
+                guard let self = self else { return }
+                // Use the real duration when the file reports one
+                self.duration = duration > 0 ? duration : Double(song.duration)
+                // Mark the player as playing
+                self.state = .playing
+                // Update Control Center / lock screen
+                self.updateNowPlayingInfo()
+                // Track this song in recently played history
+                self.addToRecentlyPlayed(song)
+            }
+        }
+    }
     /// Internal method: play a specific song from the queue.
     ///
     /// This does the heavy lifting:
@@ -336,6 +433,15 @@ class AudioPlayer: ObservableObject {
         // If the URL is invalid (shouldn't happen with our data), we log and return.
         guard let url = URL(string: song.audioUrl) else {
             print("Invalid audio URL: \(song.audioUrl)")
+            return
+        }
+        
+        // If the equalizer is enabled and this is a LOCAL file (a downloaded
+        // song — queue navigation often replays local URLs), use the EQ engine.
+        // This keeps the equalizer working when the queue advances to the
+        // next downloaded song.
+        if let eq = EqualizerManager.shared, eq.isEnabled, url.isFileURL {
+            startEQPlayback(song, localURL: url)
             return
         }
         
@@ -443,8 +549,10 @@ class AudioPlayer: ObservableObject {
                 await playSong(currentSong!)
             }
         case .all, .none:
-            // Check if crossfade is enabled and there's a next song
-            if isCrossfadeEnabled && currentIndex < queue.count - 1 {
+            // Check if crossfade is enabled and there's a next song.
+            // Crossfade is skipped when the equalizer engine is playing,
+            // because crossfade is implemented with AVPlayer only.
+            if isCrossfadeEnabled && eqEngine == nil && currentIndex < queue.count - 1 {
                 // Start crossfade transition to next song
                 performCrossfadeToNext()
             } else {
@@ -582,6 +690,20 @@ class AudioPlayer: ObservableObject {
     ///
     /// If playing → pause. If paused → play. If stopped → do nothing.
     func togglePlayPause() {
+        // If the equalizer engine is active, toggle THAT instead of AVPlayer
+        if let eq = eqEngine {
+            if state == .playing {
+                eq.pause()
+                state = .paused
+            } else if state == .paused {
+                eq.resume()
+                state = .playing
+            }
+            // Update Control Center with new state
+            updateNowPlayingInfo()
+            return
+        }
+        
         guard let player = player else { return }
         
         if state == .playing {
@@ -600,6 +722,10 @@ class AudioPlayer: ObservableObject {
     /// This is called internally before starting a new song.
     /// It removes the time observer, pauses the player, and resets state.
     private func stopPlayer() {
+        // Stop the equalizer engine too (if it's active)
+        eqEngine?.stop()
+        eqEngine = nil
+        
         // Remove the time observer to prevent memory leaks
         if let token = timeObserverToken {
             player?.removeTimeObserver(token)
@@ -632,6 +758,14 @@ class AudioPlayer: ObservableObject {
     /// Converts the fraction to seconds (duration × progress),
     /// then tells AVPlayer to jump to that time.
     func seek(to progress: Double) {
+        // If the equalizer engine is active, seek IT instead of AVPlayer
+        if let eq = eqEngine {
+            let targetSeconds = duration * progress
+            eq.seek(toSeconds: targetSeconds)
+            currentTime = targetSeconds
+            return
+        }
+        
         guard let player = player else { return }
         
         // Convert fraction to seconds and create a CMTime
@@ -647,6 +781,13 @@ class AudioPlayer: ObservableObject {
     /// this method takes an absolute time in seconds.
     /// Used by lyrics tap-to-seek to jump to a specific timestamp.
     func seekToTime(_ seconds: Double) {
+        // If the equalizer engine is active, seek IT instead of AVPlayer
+        if let eq = eqEngine {
+            eq.seek(toSeconds: seconds)
+            currentTime = seconds
+            return
+        }
+        
         guard let player = player else { return }
         
         let targetTime = CMTime(seconds: seconds, preferredTimescale: 600)
@@ -658,6 +799,14 @@ class AudioPlayer: ObservableObject {
     ///
     /// `min()` ensures we don't go past the end of the song.
     func skipForward() {
+        // If the equalizer engine is active, skip IT instead of AVPlayer
+        if let eq = eqEngine {
+            let newTime = min(currentTime + 15, duration) // Cap at song duration
+            eq.seek(toSeconds: newTime)
+            currentTime = newTime
+            return
+        }
+        
         guard let player = player else { return }
         
         let newTime = min(currentTime + 15, duration) // Cap at song duration
@@ -670,6 +819,14 @@ class AudioPlayer: ObservableObject {
     ///
     /// `max()` ensures we don't go below 0 seconds.
     func skipBackward() {
+        // If the equalizer engine is active, skip IT instead of AVPlayer
+        if let eq = eqEngine {
+            let newTime = max(currentTime - 15, 0) // Floor at 0 seconds
+            eq.seek(toSeconds: newTime)
+            currentTime = newTime
+            return
+        }
+        
         guard let player = player else { return }
         
         let newTime = max(currentTime - 15, 0) // Floor at 0 seconds
@@ -689,6 +846,8 @@ class AudioPlayer: ObservableObject {
         // Clamp the value to 0.0...1.0 to prevent invalid values
         let clamped = min(max(level, 0), 1)
         volume = clamped
+        // Apply to the equalizer engine if it's active
+        eqEngine?.setVolume(clamped)
         // Apply to the actual AVPlayer
         player?.volume = Float(clamped)
     }
