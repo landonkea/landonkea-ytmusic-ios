@@ -118,7 +118,13 @@ struct PlayerView: View {
                         // preview only accepts Transferable types, and AsyncImage
                         // does not conform to Transferable.
                         ShareLink(
-                            item: URL(string: "https://music.youtube.com/watch?v=\(song.id)")!,
+                            // song.id comes from the unofficial YouTube API and
+                            // isn't validated as URL-safe before this point, so
+                            // avoid force-unwrapping — fall back to YouTube
+                            // Music's homepage rather than crashing if it's ever
+                            // an unexpected value.
+                            item: URL(string: "https://music.youtube.com/watch?v=\(song.id)")
+                                ?? URL(string: "https://music.youtube.com")!,
                             preview: SharePreview(song.title)
                         ) {
                             Image(systemName: "square.and.arrow.up")
@@ -363,8 +369,8 @@ struct PlayerView: View {
                         }) {
                             if offlineManager.isDownloading(song.id) {
                                 ProgressView()
-                        .tint(.white)
-                        .accessibilityLabel("Volume")
+                                    .tint(.white)
+                                    .accessibilityLabel("Downloading")
                             } else if offlineManager.isDownloaded(song.id) {
                                 Image(systemName: "checkmark.circle.fill")
                                     .font(.title3)

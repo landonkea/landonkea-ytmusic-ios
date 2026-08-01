@@ -15,6 +15,19 @@ added/removed or `project.yml` changes.
 - **Privacy usage strings** live in `project.yml` (they must stay there — the
   app crashes without `NSSpeechRecognitionUsageDescription` and
   `NSMicrophoneUsageDescription`).
+- **Secrets** (currently just the InnerTube API key) are injected via
+  `Config/Secrets.xcconfig`, which is gitignored. Before your first build,
+  copy `Config/Secrets.example.xcconfig` to `Config/Secrets.xcconfig` — the
+  example file documents every key and has the real (public) InnerTube key
+  value in its comments. Without this file the app builds but crashes on
+  launch with a clear `fatalError` message telling you what to do.
+
+### 0. One-time secrets setup
+```bash
+cp Config/Secrets.example.xcconfig Config/Secrets.xcconfig
+# then edit Config/Secrets.xcconfig and fill in INNERTUBE_API_KEY
+# (see the comment in Secrets.example.xcconfig for the value/explanation)
+```
 
 ### 1. Build & Run (command line)
 ```bash

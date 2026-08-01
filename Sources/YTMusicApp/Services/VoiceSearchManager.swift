@@ -127,9 +127,15 @@ class VoiceSearchManager: ObservableObject {
             onBus: 0,
             bufferSize: 1024, // Small buffer = low latency
             format: recordingFormat
-        ) { buffer, _ in
+        ) { [weak self] buffer, _ in
+            // [weak self] avoids a retain cycle: this closure is held by
+            // audioEngine.inputNode until removeTap() is called, and
+            // audioEngine is itself owned by self — a strong capture here
+            // would mean self can never deallocate unless stopListening()
+            // always runs first (e.g. the owning view could be dismissed
+            // mid-listen without calling it).
             // Append each audio buffer to the recognition request
-            self.recognitionRequest?.append(buffer)
+            self?.recognitionRequest?.append(buffer)
         }
         
         // Prepare and start the audio engine
@@ -141,19 +147,24 @@ class VoiceSearchManager: ObservableObject {
             return
         }
         
-        // Start the recognition task
-        recognitionTask = recognizer.recognitionTask(with: request) { result, error in
+        // Start the recognition task.
+        // [weak self]: this closure is retained by `self.recognitionTask`
+        // itself (a strong reference cycle: self → recognitionTask → this
+        // closure → self) until the task completes or is cancelled — a
+        // strong `self` here would leak the manager if it's ever
+        // deallocated while a recognition task is still in flight.
+        recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             // Process recognition results as they come in
             if let result = result {
                 // Update the recognized text on the main thread
                 DispatchQueue.main.async {
-                    self.recognizedText = result.bestTranscription.formattedString
+                    self?.recognizedText = result.bestTranscription.formattedString
                 }
             }
-            
+
             // If there's an error or recognition is complete, stop
             if error != nil || (result?.isFinal ?? false) {
-                self.stopListening()
+                self?.stopListening()
             }
         }
         

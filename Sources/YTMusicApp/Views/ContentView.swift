@@ -70,14 +70,16 @@ struct ContentView: View {
                         Label("Settings", systemImage: "gearshape.fill")
                     }
             }
-            // iPad/Mac keyboard shortcuts for playback control.
-            // These work when the app is focused and no text field is active.
-            .keyboardShortcut(" ", modifiers: [])  // Space = play/pause (no modifier)
-            .onKeyPress(.space) { [weak audioPlayer] in  // Alternative: SwiftUI onKeyPress
-                // Note: onKeyPress is iOS 17+; this is a backup approach
-                return .handled
-            }
-            
+            // NOTE: iPad/Mac keyboard shortcuts for playback control are
+            // implemented below via hidden Buttons + .keyboardShortcut
+            // (search "Space = Play/Pause"). That's the one working
+            // mechanism — .keyboardShortcut has no effect when applied
+            // directly to a container view like TabView (it only works on
+            // Button/MenuItem-like views), and a previous .onKeyPress(.space)
+            // handler here returned .handled without ever calling
+            // togglePlayPause(), which meant it silently swallowed the
+            // space key instead of pausing/playing. Both were removed.
+
             // ── MINI PLAYER ────────────────────────────────────────
             // The mini player shows at the bottom when a song is playing.
             // It's in a ZStack (not inside the TabView) so it floats

@@ -10,8 +10,32 @@ class InnerTubeClient {
     /// Base URL for all InnerTube API requests (YouTube Music)
     private let baseURL = "https://music.youtube.com/youtubei/v1"
     
-    /// API key (obtained from YouTube's web app - this is public, not a secret)
-    private let apiKey = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30"
+    /// InnerTube WEB_REMIX client API key, required on every request URL.
+    ///
+    /// NOT hardcoded here on purpose: even though this specific key is
+    /// YouTube's well-known PUBLIC "InnerTube WEB client" identifier (the
+    /// same constant Google embeds client-side in every youtube.com page,
+    /// and that yt-dlp/ytmusicapi/Metrolist/etc. all use identically — it's
+    /// a client-type identifier, not a billed or account-linked credential),
+    /// this project's policy is that anything key/token/credential-shaped
+    /// gets pulled out of source into build-time config, no exceptions.
+    ///
+    /// The real value is injected via Config/Secrets.xcconfig (gitignored)
+    /// → INFOPLIST_KEY_INNERTUBE_API_KEY (project.yml) → the app's
+    /// Info.plist → read here at runtime. See Config/Secrets.example.xcconfig
+    /// for the value and setup instructions.
+    private let apiKey: String = {
+        guard let key = Bundle.main.object(forInfoDictionaryKey: "INNERTUBE_API_KEY") as? String,
+              !key.isEmpty,
+              key != "YOUR_INNERTUBE_API_KEY_HERE" else {
+            fatalError("""
+                Missing INNERTUBE_API_KEY. Copy Config/Secrets.example.xcconfig \
+                to Config/Secrets.xcconfig, fill in the real key, then run \
+                `xcodegen generate` and rebuild.
+                """)
+        }
+        return key
+    }()
     
     /// URL session for making HTTP requests
     private let session: URLSession

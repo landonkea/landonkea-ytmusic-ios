@@ -149,11 +149,6 @@ class AudioPlayer: ObservableObject {
     /// Both the outgoing and incoming songs play simultaneously during this time.
     @Published var crossfadeDuration: Double = 5.0
     
-    /// The secondary player used during crossfade transitions.
-    /// While the main `player` is fading out, this player fades in the next song.
-    /// After the crossfade completes, this player becomes the main player.
-    private var crossfadePlayer: AVPlayer?
-    
     /// Timer that manages the crossfade volume animation.
     /// Fires every 0.1 seconds to smoothly adjust both players' volumes.
     private var crossfadeTimer: Timer?
@@ -544,9 +539,14 @@ class AudioPlayer: ObservableObject {
     private func handleSongEnded() {
         switch repeatMode {
         case .one:
-            // Repeat the current song — replay it from the beginning
+            // Repeat the current song — replay it from the beginning.
+            // Guard instead of force-unwrapping: currentSong is normally set
+            // whenever a song is ending, but this callback originates from
+            // an AVPlayer/EqualizerEngine closure, so we don't want a crash
+            // here if state ever changes out from under us mid-callback.
+            guard let song = currentSong else { return }
             Task {
-                await playSong(currentSong!)
+                await playSong(song)
             }
         case .all, .none:
             // Check if crossfade is enabled and there's a next song.
@@ -670,7 +670,6 @@ class AudioPlayer: ObservableObject {
                         oldPlayer.removeTimeObserver(oldToken)
                     }
                     oldPlayer.pause()
-                    self.crossfadePlayer = nil
                 } else {
                     // Animate volumes
                     // New player fades IN: 0.0 → 1.0
@@ -725,13 +724,22 @@ class AudioPlayer: ObservableObject {
         // Stop the equalizer engine too (if it's active)
         eqEngine?.stop()
         eqEngine = nil
-        
+
+        // Cancel any in-flight crossfade. Without this, skipping to a new
+        // song while a crossfade is mid-animation leaves the old
+        // crossfadeTimer running in the background — it keeps firing every
+        // ~0.1s and mutating volumes on players that are no longer part of
+        // the active playback state.
+        crossfadeTimer?.invalidate()
+        crossfadeTimer = nil
+        crossfadeProgress = 0
+
         // Remove the time observer to prevent memory leaks
         if let token = timeObserverToken {
             player?.removeTimeObserver(token)
             timeObserverToken = nil
         }
-        
+
         // Pause and discard the player
         player?.pause()
         player = nil

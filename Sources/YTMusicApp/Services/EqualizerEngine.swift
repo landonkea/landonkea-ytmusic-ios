@@ -96,7 +96,29 @@ class EqualizerEngine {
     /// The total duration of the current file in seconds.
     /// Used by the time-pitch unit and for seek calculations.
     private var fileDuration: Double = 0
-    
+
+    // MARK: - Initialization
+
+    /// Attach all three custom nodes to the engine.
+    ///
+    /// WHY THIS IS REQUIRED: AVAudioEngine.connect(_:to:format:) will THROW
+    /// an uncaught Objective-C exception (crashing the app) if either node
+    /// passed to it hasn't been attached to the engine first via
+    /// engine.attach(_:) — attaching and connecting are separate steps.
+    /// (engine.mainMixerNode is attached automatically by the engine itself,
+    /// so it doesn't need this.)
+    ///
+    /// We attach exactly once here, in init, rather than in buildGraph().
+    /// buildGraph() re-runs every time playFile() is called (including
+    /// replays on the same engine instance), and re-attaching an
+    /// already-attached node also throws — so attaching must happen exactly
+    /// once per node's lifetime, and init is the only place that's true.
+    init() {
+        engine.attach(playerNode)
+        engine.attach(timePitch)
+        engine.attach(eqNode)
+    }
+
     // MARK: - Public Playback Controls
     
     /// Start playing a local audio file through the equalizer.

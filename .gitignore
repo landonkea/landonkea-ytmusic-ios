@@ -34,3 +34,7 @@ Package.resolved
 # App specific
 *.mobileprovision
 *.entitlements
+
+# Secrets — real values are gitignored; Config/Secrets.example.xcconfig
+# (committed) documents every key and is the template to copy from.
+Config/Secrets.xcconfig

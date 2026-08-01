@@ -48,18 +48,6 @@ struct PlaylistDetailView: View {
     /// Whether downloads are in progress for "Download All"
     @State private var isDownloadingAll = false
 
-    /// Whether we are working with a local playlist or an external one
-    private var isLocalPlaylist: Bool {
-        playlist != nil
-    }
-
-    /// The effective playlist (local or fetched from browseId)
-    /// For browseId playlists, this would be fetched from the API
-    @State private var fetchedPlaylist: Playlist?
-    
-    /// Loading state for external playlists
-    @State private var isLoadingExternal = false
-
     // body is the required property of the View protocol.
     // It describes the entire screen layout and behavior.
     var body: some View {

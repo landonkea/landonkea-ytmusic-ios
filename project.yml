@@ -16,6 +16,16 @@ options:
   # Create folders that contain no files so the navigator stays tidy.
   generateEmptyDirectories: true
 
+# "configFiles:" applies an xcconfig at the PROJECT level for each build
+# configuration, before any target-level settings. We use this to inject
+# secrets (API keys, etc.) as build settings instead of hardcoding them in
+# source. Config/Secrets.xcconfig is gitignored — copy
+# Config/Secrets.example.xcconfig to Config/Secrets.xcconfig and fill in
+# real values before building. See that file for what each setting means.
+configFiles:
+  Debug: Config/Secrets.xcconfig
+  Release: Config/Secrets.xcconfig
+
 # "targets:" defines what gets built.
 targets:
   # ── YTMusicApp — the application target ──────────────────────
@@ -64,6 +74,12 @@ targets:
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Voice search lets you search for songs, artists, and albums by speaking instead of typing."
         # Voice search records audio through the microphone — required usage string.
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Voice search needs microphone access to hear your spoken search."
+        # Injects the INNERTUBE_API_KEY build setting (from
+        # Config/Secrets.xcconfig) into the generated Info.plist under the
+        # key "INNERTUBE_API_KEY". InnerTubeClient.swift reads it at runtime
+        # via Bundle.main — this is how the key gets from the gitignored
+        # xcconfig into the compiled app without ever being hardcoded.
+        INFOPLIST_KEY_INNERTUBE_API_KEY: $(INNERTUBE_API_KEY)
         # Only build for the device architectures Xcode runs on.
         ONLY_ACTIVE_ARCH: YES
         # Signing for the simulator — no team needed for local builds.
