@@ -125,24 +125,59 @@ struct ContentView: View {
         // Reads @AppStorage("fontSizeScale") and adjusts DynamicTypeSize.
         .withFontScale()
         // iPad/Mac keyboard shortcuts for playback control.
-        // These hidden buttons handle key presses via focus system.
+        // `.background { ... }` tucks a view behind everything else in the
+        // ZStack — here we (ab)use it purely to smuggle the invisible
+        // shortcut buttons into the view hierarchy so they can receive key
+        // presses, not to draw anything visible.
         .background {
-            // Space = Play/Pause
+            keyboardShortcutButtons
+        }
+    }
+
+    // MARK: - Keyboard Shortcuts (iPad / Mac)
+
+    /// Hidden buttons that let a hardware keyboard control playback.
+    ///
+    /// WHY HIDDEN BUTTONS INSTEAD OF SOMETHING SIMPLER:
+    /// SwiftUI's `.keyboardShortcut(_:modifiers:)` view modifier only takes
+    /// effect on a `Button` (or similar tappable/menu-item view) — it does
+    /// NOT work when applied directly to a container like `TabView`. So to
+    /// make Space/←/→ control playback anywhere in the app, we create three
+    /// invisible buttons, give each one a keyboard shortcut, and hide them
+    /// with `.hidden()`. `.hidden()` keeps a view "in" the hierarchy (so it
+    /// can still receive events like key presses) while making it invisible
+    /// and non-interactive to touch/taps — unlike simply not including the
+    /// view at all.
+    ///
+    /// A return type of `some View` (used throughout this file) means "this
+    /// computed property returns some concrete type that conforms to the
+    /// `View` protocol, but callers don't need to know exactly which type it
+    /// is" — SwiftUI calls this an "opaque return type", and it's what lets
+    /// us break a big `body` into smaller, named pieces like this one.
+    private var keyboardShortcutButtons: some View {
+        // `Group` bundles multiple views together without adding any layout
+        // of its own (no extra stacking or spacing) — we need it here
+        // because a computed property can only return ONE view, and we have
+        // three buttons to return together.
+        Group {
+            // Space = Play/Pause.
+            // The trailing closure `{ audioPlayer.togglePlayPause() }` is
+            // the button's action: the block of code that runs when the
+            // button is triggered — here, via the keyboard shortcut below
+            // rather than a finger tap.
             Button("") {
                 audioPlayer.togglePlayPause()
             }
             .keyboardShortcut(.space, modifiers: [])
             .hidden()
-        }
-        .background {
+
             // Right arrow = Next track
             Button("") {
                 audioPlayer.playNext()
             }
             .keyboardShortcut(.rightArrow, modifiers: [])
             .hidden()
-        }
-        .background {
+
             // Left arrow = Previous track
             Button("") {
                 audioPlayer.playPrevious()
@@ -174,87 +209,141 @@ struct MiniPlayer: View {
     private let swipeThreshold: CGFloat = 80
     
     var body: some View {
-        // Safely unwrap — if nothing is playing, show nothing
+        // `if let song = ...` is "optional binding": `audioPlayer.currentSong`
+        // is an OPTIONAL (`NowPlaying?`), meaning it might hold a value or
+        // might be `nil` (nothing). This line only runs the code inside the
+        // braces when there IS a value, and it unwraps that value into a new,
+        // non-optional local constant called `song`. If `currentSong` is nil
+        // (nothing playing), the `if` is false and the whole body renders as
+        // nothing — this is how the mini player disappears when playback stops.
         if let song = audioPlayer.currentSong {
             VStack(spacing: 0) {
-                // ── PROGRESS BAR ──────────────────────────────────
-                GeometryReader { geometry in
-                    Rectangle()
-                        .fill(Color.blue)
-                        .frame(width: geometry.size.width * audioPlayer.progress, height: 3)
-                }
-                .frame(height: 3)
-                
-                // ── SONG INFO AND CONTROLS ────────────────────────
-                HStack {
-                    // Album art thumbnail (48x48 points)
-                    AsyncImage(url: URL(string: song.thumbnailUrl)) { image in
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } placeholder: {
-                        Rectangle()
-                            .fill(Color.gray.opacity(0.3))
-                    }
-                    .frame(width: 48, height: 48)
-                    .cornerRadius(8)
-                    
-                    // Song title and artist, stacked vertically
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(song.title)
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .lineLimit(1)
-                        Text(song.artist)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                    
-                    Spacer() // Pushes play button to the right
-                    
-                    // Play/pause button
-                    Button(action: {
-                        Haptics.tap()
-                        audioPlayer.togglePlayPause()
-                    }) {
-                        Image(systemName: audioPlayer.state == .playing ? "pause.fill" : "play.fill")
-                            .font(.title2)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
+                progressBar
+                songInfoRow(for: song)
             }
             // Apply the drag gesture for swiping between songs
             .offset(x: dragOffset) // Visual feedback — slides with the finger
-            .gesture(
-                DragGesture(minimumDistance: 20) // 20pt minimum to avoid accidental swipes
-                    .onChanged { value in
-                        // Only allow horizontal dragging (ignore vertical movement)
-                        // The translation.width shows how far the finger has moved horizontally
-                        dragOffset = value.translation.width
-                    }
-                    .onEnded { value in
-                        // Check if the swipe was far enough to trigger a skip
-                        if value.translation.width < -swipeThreshold {
-                            // Swiped LEFT → next song
-                            audioPlayer.playNext()
-                        } else if value.translation.width > swipeThreshold {
-                            // Swiped RIGHT → previous song
-                            audioPlayer.playPrevious()
-                        }
-                        // Reset the drag offset (snap back to center)
-                        withAnimation(.easeOut(duration: 0.2)) {
-                            dragOffset = 0
-                        }
-                    }
-            )
+            .gesture(swipeGesture)
             // White/light background for the mini player bar
             .background(Color(.systemBackground))
             // Subtle shadow below the mini player for depth
             .shadow(color: .black.opacity(0.1), radius: 5, x: 0, y: -2)
         }
+    }
+
+    // MARK: - Progress Bar
+
+    /// Thin bar across the top of the mini player showing playback progress.
+    private var progressBar: some View {
+        // `GeometryReader` is a container view that, instead of drawing
+        // anything itself, measures the space SwiftUI has given it and
+        // hands that size to its closure as `geometry`. We need this here
+        // because the filled portion of the bar must be a FRACTION of
+        // whatever width is available (e.g. iPhone vs iPad), not a fixed
+        // number of points — something a plain `Rectangle` can't do alone.
+        GeometryReader { geometry in
+            Rectangle()
+                .fill(Color.blue)
+                // audioPlayer.progress is a Double from 0.0 (just started)
+                // to 1.0 (finished). Multiplying it by the full width gives
+                // us the width of just the "filled" portion of the bar.
+                .frame(width: geometry.size.width * audioPlayer.progress, height: 3)
+        }
+        .frame(height: 3)
+    }
+
+    // MARK: - Song Info Row
+
+    /// Thumbnail, title/artist, and the play/pause button for the currently
+    /// playing song.
+    ///
+    /// `song` is `NowPlaying`, the model type that describes whatever track
+    /// is currently loaded into the player (title, artist, artwork URL, etc).
+    private func songInfoRow(for song: NowPlaying) -> some View {
+        HStack {
+            // Album art thumbnail (48x48 points).
+            // `AsyncImage` downloads and displays an image from a URL. This
+            // is the two-closure form: the first closure receives the loaded
+            // `Image` once the download succeeds, and `placeholder` supplies
+            // a stand-in view to show while loading (or if the URL is bad).
+            // `URL(string: song.thumbnailUrl)` is itself an optional —
+            // `AsyncImage` handles a nil URL gracefully by just showing the
+            // placeholder, so no force-unwrap is needed here.
+            AsyncImage(url: URL(string: song.thumbnailUrl)) { image in
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                Rectangle()
+                    .fill(Color.gray.opacity(0.3))
+            }
+            .frame(width: 48, height: 48)
+            .cornerRadius(8)
+
+            // Song title and artist, stacked vertically
+            VStack(alignment: .leading, spacing: 2) {
+                Text(song.title)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                Text(song.artist)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer() // Pushes play button to the right
+
+            // Play/pause button
+            Button(action: {
+                Haptics.tap()
+                audioPlayer.togglePlayPause()
+            }) {
+                Image(systemName: audioPlayer.state == .playing ? "pause.fill" : "play.fill")
+                    .font(.title2)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: - Swipe Gesture
+
+    /// Horizontal swipe-to-skip gesture: swipe left for next track, right
+    /// for previous track.
+    ///
+    /// The property type `some Gesture` works the same way `some View` does
+    /// elsewhere in this file — it says "this returns some concrete type
+    /// conforming to the `Gesture` protocol" without spelling out SwiftUI's
+    /// full (and rather ugly) generic gesture type.
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 20) // 20pt minimum to avoid accidental swipes
+            // `.onChanged` fires repeatedly WHILE the finger is moving.
+            // `value` describes the drag so far; `value.translation.width`
+            // is how far (in points) the finger has moved horizontally from
+            // where the drag started. We ignore vertical movement entirely.
+            .onChanged { value in
+                dragOffset = value.translation.width
+            }
+            // `.onEnded` fires once, when the finger lifts off the screen.
+            .onEnded { value in
+                // Check if the swipe was far enough to trigger a skip
+                if value.translation.width < -swipeThreshold {
+                    // Swiped LEFT → next song
+                    audioPlayer.playNext()
+                } else if value.translation.width > swipeThreshold {
+                    // Swiped RIGHT → previous song
+                    audioPlayer.playPrevious()
+                }
+                // Reset the drag offset (snap back to center).
+                // `withAnimation` wraps a state change so SwiftUI animates
+                // the resulting UI update instead of jumping instantly —
+                // here, the mini player slides back to its resting position.
+                withAnimation(.easeOut(duration: 0.2)) {
+                    dragOffset = 0
+                }
+            }
     }
 }
 
@@ -264,17 +353,28 @@ struct MiniPlayer: View {
 ///
 /// Currently shows a "coming soon" message. Will be replaced with
 /// playlists, saved songs, and albums when login is implemented.
+///
+/// NOTE FOR READERS: the Library tab in the `TabView` above actually uses
+/// `PlaylistsView()`, not this struct — `LibraryView` isn't referenced
+/// anywhere else in the app right now. It's kept here as a simple, working
+/// example of the "coming soon" pattern rather than deleted, but if you're
+/// looking for the real Library tab's code, see `PlaylistsView`.
 struct LibraryView: View {
     var body: some View {
+        // `NavigationView` is the older API for wrapping content in a
+        // navigation bar (with a title, back buttons, etc). Newer code in
+        // this app (see the TabView above) uses `NavigationStack` instead,
+        // which has more predictable behavior — `NavigationView` still
+        // works but is considered legacy.
         NavigationView {
             VStack(spacing: 20) {
                 Image(systemName: "square.stack.fill")
                     .font(.system(size: 60))
                     .foregroundColor(.secondary)
-                
+
                 Text("Library")
                     .font(.title)
-                
+
                 Text("Playlists, albums, and saved songs will appear here")
                     .font(.subheadline)
                     .foregroundColor(.secondary)

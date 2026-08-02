@@ -50,177 +50,30 @@ struct PlaylistDetailView: View {
 
     // body is the required property of the View protocol.
     // It describes the entire screen layout and behavior.
+    //
+    // NOTE ON STRUCTURE: this body used to be one very long expression with
+    // every section inlined. It's now split into small computed properties
+    // (playlistHeaderSection, emptyStateSection, songsSection, toolbarMenu)
+    // below. A "computed property" is a property that isn't stored — instead
+    // its value is calculated by running a small chunk of code every time you
+    // read it. Splitting a view this way makes each piece easier to read,
+    // easier for the Swift compiler to type-check, and easier to reuse.
     var body: some View {
         // List is a scrolling container that can have sections and rows.
         // It also supports swipe-to-delete and drag-to-reorder.
         List {
             // ── PLAYLIST HEADER ──────────────────────────────────
-            // Section groups related rows together in a List.
-            Section {
-                // VStack arranges children vertically with 12 pts spacing.
-                VStack(spacing: 12) {
-                    // Playlist icon
-                    // SF Symbol for a stack of squares — a generic playlist icon.
-                    Image(systemName: "square.stack.fill")
-                        // Sets the icon size to 50 pts (large title size).
-                        .font(.system(size: 50))
-                        // Colors the icon blue.
-                        .foregroundColor(.blue)
-
-                    // Playlist name
-                    // Shows the playlist's name as a text label.
-                    Text(playlist.name)
-                        // Uses title2 font style (medium-large heading).
-                        .font(.title2)
-                        // Makes the text bold for emphasis.
-                        .fontWeight(.bold)
-
-                    // Song count and duration
-                    // Displays e.g. "12 songs • 45:30" using string interpolation.
-                    Text("\(playlist.songCount) songs • \(playlist.totalDuration)")
-                        // Uses the subheadline font style (smaller than body).
-                        .font(.subheadline)
-                        // Uses the secondary color (usually gray) for less emphasis.
-                        .foregroundColor(.secondary)
-
-                    // Play All button
-                    // Only show the button if the playlist has at least one song.
-                    if !playlist.songs.isEmpty {
-                        // A tappable button that triggers playAll() when pressed.
-                        Button(action: {
-                            // Calls the private method below to start playback.
-                            playAll()
-                        }) {
-                            // HStack arranges the icon and text side-by-side.
-                            HStack {
-                                // Play icon from SF Symbols.
-                                Image(systemName: "play.fill")
-                                // Label text.
-                                Text("Play All")
-                            }
-                            // Uses headline font style (slightly bold body text).
-                            .font(.headline)
-                            // White text on the blue button.
-                            .foregroundColor(.white)
-                            // Stretches the button to fill the whole width.
-                            .frame(maxWidth: .infinity)
-                            // Adds 12 pts of vertical padding inside the button.
-                            .padding(.vertical, 12)
-                            // Fills the background with Apple's blue color.
-                            .background(Color.blue)
-                            // Rounds the corners by 12 pts.
-                            .cornerRadius(12)
-                        }
-                        
-                        // Download All button — downloads all songs for offline playback
-                        Button(action: {
-                            downloadAll()
-                        }) {
-                            // HStack arranges the icon and text side-by-side.
-                            HStack {
-                                // Download icon from SF Symbols.
-                                Image(systemName: "arrow.down.circle")
-                                // Label text.
-                                Text("Download All")
-                            }
-                            // Uses headline font style (slightly bold body text).
-                            .font(.headline)
-                            // White text on the blue button.
-                            .foregroundColor(.white)
-                            // Stretches the button to fill the whole width.
-                            .frame(maxWidth: .infinity)
-                            // Adds 12 pts of vertical padding inside the button.
-                            .padding(.vertical, 12)
-                            // Fills the background with green (download color).
-                            .background(Color.green)
-                            // Rounds the corners by 12 pts.
-                            .cornerRadius(12)
-                        }
-                    }
-                }
-                // Makes the VStack stretch across the full width of the screen.
-                .frame(maxWidth: .infinity)
-                // Adds vertical padding around the entire header area.
-                .padding(.vertical)
-            }
-            // Removes the default gray background from this section row.
-            .listRowBackground(Color.clear)
+            playlistHeaderSection
 
             // ── SONGS LIST ──────────────────────────────────────
-            // If there are no songs, show a friendly empty-state message.
+            // If there are no songs, show a friendly empty-state message,
+            // otherwise show the real list of songs. This is a ternary-like
+            // branch using a plain `if/else` — SwiftUI is fine with either
+            // branch appearing since both produce "some View".
             if playlist.songs.isEmpty {
-                Section {
-                    // Centers the empty-state content vertically.
-                    VStack(spacing: 12) {
-                        // A small music note icon.
-                        Image(systemName: "music.note")
-                            // Uses title2 font size.
-                            .font(.title2)
-                            // Gray color for subtle appearance.
-                            .foregroundColor(.secondary)
-
-                        // Main empty-state heading.
-                        Text("No songs in this playlist")
-                            // Small font below the body size.
-                            .font(.subheadline)
-                            // Gray color.
-                            .foregroundColor(.secondary)
-
-                        // Instructional sub-text explaining how to add songs.
-                        Text("Add songs from the player or search results")
-                            // Even smaller caption font.
-                            .font(.caption)
-                            // Gray color like the rest of the empty state.
-                            .foregroundColor(.secondary)
-                            // Allows the text to wrap to multiple lines and center.
-                            .multilineTextAlignment(.center)
-                    }
-                    // Centers the stack horizontally in the List.
-                    .frame(maxWidth: .infinity)
-                    // Adds padding around the entire empty-state area.
-                    .padding()
-                }
+                emptyStateSection
             } else {
-                // If the playlist has songs, show them in a section.
-                Section {
-                    // Loops over each song with its index (0, 1, 2...).
-                    // .enumerated() gives us (index, song) pairs.
-                    // id: \.element.id tells SwiftUI each row is unique by song.id.
-                    ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
-                        // The entire row is a button — tapping it starts playback.
-                        Button(action: {
-                            // Play this song and the rest of the playlist
-                            // Calls the private method below starting at this index.
-                            playFrom(index: index)
-                        }) {
-                        // HStack lays out the row content horizontally.
-                        // The row is a separate function so the compiler can
-                        // type-check it on its own (the combined expression
-                        // was too large for Swift's type-checker).
-                        songRow(song: song, index: index)
-                    }
-                        // Removes the default blue highlight when tapping the row.
-                        .buttonStyle(.plain)
-                        // Adds a swipe gesture on the right edge of the row.
-                        .swipeActions(edge: .trailing) {
-                            // A red "destructive" button that appears when swiping.
-                            Button(role: .destructive) {
-                                // Removes this specific song from the playlist.
-                                playlistManager.removeSong(song, from: playlist)
-                            } label: {
-                                // The button shows a trash icon with "Remove" label.
-                                Label("Remove", systemImage: "trash")
-                            }
-                        }
-                    }
-                    // Enables drag-to-reorder on the list rows.
-                    // source: the positions being moved; destination: where they land.
-                    .onMove { source, destination in
-                        // Reorder songs within the playlist
-                        // Calls the private reorder method defined below.
-                        reorderSongs(from: source, to: destination)
-                    }
-                }
+                songsSection
             }
         }
         // Sets the navigation bar title to the playlist's name.
@@ -231,46 +84,7 @@ struct PlaylistDetailView: View {
         .toolbar {
             // Places this item on the right side of the navigation bar.
             ToolbarItem(placement: .navigationBarTrailing) {
-                // A drop-down menu (three-dot menu on iPhone).
-                Menu {
-                    // Share playlist as text
-                    // Only show the Share option if there are songs.
-                    if !playlist.songs.isEmpty {
-                        // A built-in SwiftUI share sheet button.
-                        ShareLink(
-                            // The text content to share.
-                            item: playlistShareText,
-                        // Preview shows the playlist name when sharing.
-                        preview: SharePreview(playlist.name)
-                        ) {
-                            // The menu item label with share icon.
-                            Label("Share Playlist", systemImage: "square.and.arrow.up")
-                        }
-                    }
-
-                    // A "Rename" button in the menu.
-                    Button(action: {
-                        // Pre-fills the text field with the current name.
-                        renameText = playlist.name
-                        // Shows the rename alert as a pop-up.
-                        showRenameAlert = true
-                    }) {
-                        // Menu item with pencil icon.
-                        Label("Rename", systemImage: "pencil")
-                    }
-
-                    // A red "Delete Playlist" button in the menu.
-                    Button(role: .destructive, action: {
-                        // Permanently deletes the entire playlist.
-                        playlistManager.deletePlaylist(playlist)
-                    }) {
-                        // Menu item with trash icon.
-                        Label("Delete Playlist", systemImage: "trash")
-                    }
-                } label: {
-                    // The three-dot circle icon that opens the menu.
-                    Image(systemName: "ellipsis.circle")
-                }
+                toolbarMenu
             }
         }
         // Presents an alert dialog for renaming the playlist.
@@ -287,6 +101,266 @@ struct PlaylistDetailView: View {
             // A "Cancel" button that dismisses the alert without saving.
             Button("Cancel", role: .cancel) { }
         }
+    }
+
+    // MARK: - Body sub-sections
+    // Each computed property below returns "some View" — a shorthand type
+    // that means "some concrete SwiftUI view type, but I won't tell you
+    // exactly which one." That's what lets SwiftUI's declarative style
+    // (describing WHAT the UI should look like, rather than writing
+    // step-by-step instructions for HOW to build it) work without every
+    // view needing an explicit, spelled-out type name.
+
+    /// The header at the top of the screen: icon, name, song count/duration,
+    /// and the "Play All" / "Download All" action buttons.
+    @ViewBuilder
+    private var playlistHeaderSection: some View {
+        // Section groups related rows together in a List.
+        Section {
+            // VStack arranges children vertically with 12 pts spacing.
+            VStack(spacing: 12) {
+                // Playlist icon
+                // SF Symbol for a stack of squares — a generic playlist icon.
+                Image(systemName: "square.stack.fill")
+                    // Sets the icon size to 50 pts (large title size).
+                    .font(.system(size: 50))
+                    // Colors the icon blue.
+                    .foregroundColor(.blue)
+
+                // Playlist name
+                // Shows the playlist's name as a text label.
+                Text(playlist.name)
+                    // Uses title2 font style (medium-large heading).
+                    .font(.title2)
+                    // Makes the text bold for emphasis.
+                    .fontWeight(.bold)
+
+                // Song count and duration
+                // Displays e.g. "12 songs • 45:30" using string interpolation.
+                Text("\(playlist.songCount) songs • \(playlist.totalDuration)")
+                    // Uses the subheadline font style (smaller than body).
+                    .font(.subheadline)
+                    // Uses the secondary color (usually gray) for less emphasis.
+                    .foregroundColor(.secondary)
+
+                // Play All / Download All buttons
+                // Only show the buttons if the playlist has at least one song.
+                if !playlist.songs.isEmpty {
+                    playAllButton
+                    downloadAllButton
+                }
+            }
+            // Makes the VStack stretch across the full width of the screen.
+            .frame(maxWidth: .infinity)
+            // Adds vertical padding around the entire header area.
+            .padding(.vertical)
+        }
+        // Removes the default gray background from this section row.
+        .listRowBackground(Color.clear)
+    }
+
+    /// A tappable button that triggers playAll() when pressed.
+    private var playAllButton: some View {
+        Button(action: {
+            // Calls the private method below to start playback.
+            playAll()
+        }) {
+            // HStack arranges the icon and text side-by-side.
+            HStack {
+                // Play icon from SF Symbols.
+                Image(systemName: "play.fill")
+                // Label text.
+                Text("Play All")
+            }
+            // Uses headline font style (slightly bold body text).
+            .font(.headline)
+            // White text on the blue button.
+            .foregroundColor(.white)
+            // Stretches the button to fill the whole width.
+            .frame(maxWidth: .infinity)
+            // Adds 12 pts of vertical padding inside the button.
+            .padding(.vertical, 12)
+            // Fills the background with Apple's blue color.
+            .background(Color.blue)
+            // Rounds the corners by 12 pts.
+            .cornerRadius(12)
+        }
+        // Lets VoiceOver announce a clear label for this button.
+        .accessibilityLabel("Play all songs")
+    }
+
+    /// Downloads every song in the playlist for offline playback.
+    ///
+    /// BUG FIX: `isDownloadingAll` used to be set to `true`/`false` by
+    /// downloadAll() but nothing in the UI ever read it, so the button
+    /// never visibly reacted while a bulk download was running — a classic
+    /// "dead state" bug (a variable that's written but never observed).
+    /// Now the button shows a spinner and disables itself while the
+    /// download is in progress, so isDownloadingAll actually does something.
+    private var downloadAllButton: some View {
+        Button(action: {
+            downloadAll()
+        }) {
+            // HStack arranges the icon and text side-by-side.
+            HStack {
+                if isDownloadingAll {
+                    // A small spinning activity indicator, tinted white to
+                    // match the button's text/icon color.
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    // Download icon from SF Symbols.
+                    Image(systemName: "arrow.down.circle")
+                }
+                // Label text changes while the download is running so the
+                // user gets feedback that something is actually happening.
+                Text(isDownloadingAll ? "Downloading…" : "Download All")
+            }
+            // Uses headline font style (slightly bold body text).
+            .font(.headline)
+            // White text on the blue button.
+            .foregroundColor(.white)
+            // Stretches the button to fill the whole width.
+            .frame(maxWidth: .infinity)
+            // Adds 12 pts of vertical padding inside the button.
+            .padding(.vertical, 12)
+            // Fills the background with green (download color).
+            .background(Color.green)
+            // Rounds the corners by 12 pts.
+            .cornerRadius(12)
+        }
+        // Prevents double-tapping "Download All" while one run is already
+        // in progress, which would kick off a second overlapping Task loop.
+        .disabled(isDownloadingAll)
+        .accessibilityLabel(isDownloadingAll ? "Downloading all songs" : "Download all songs")
+    }
+
+    /// Friendly empty-state message shown when the playlist has no songs.
+    private var emptyStateSection: some View {
+        Section {
+            // Centers the empty-state content vertically.
+            VStack(spacing: 12) {
+                // A small music note icon.
+                Image(systemName: "music.note")
+                    // Uses title2 font size.
+                    .font(.title2)
+                    // Gray color for subtle appearance.
+                    .foregroundColor(.secondary)
+
+                // Main empty-state heading.
+                Text("No songs in this playlist")
+                    // Small font below the body size.
+                    .font(.subheadline)
+                    // Gray color.
+                    .foregroundColor(.secondary)
+
+                // Instructional sub-text explaining how to add songs.
+                Text("Add songs from the player or search results")
+                    // Even smaller caption font.
+                    .font(.caption)
+                    // Gray color like the rest of the empty state.
+                    .foregroundColor(.secondary)
+                    // Allows the text to wrap to multiple lines and center.
+                    .multilineTextAlignment(.center)
+            }
+            // Centers the stack horizontally in the List.
+            .frame(maxWidth: .infinity)
+            // Adds padding around the entire empty-state area.
+            .padding()
+        }
+    }
+
+    /// The real list of songs, with tap-to-play, swipe-to-remove, and
+    /// drag-to-reorder support.
+    private var songsSection: some View {
+        Section {
+            // Loops over each song with its index (0, 1, 2...).
+            // .enumerated() gives us (index, song) pairs.
+            // ForEach is SwiftUI's way of turning a collection into a list
+            // of views — it re-runs its closure for every element.
+            // id: \.element.id tells SwiftUI each row is unique by song.id,
+            // which is how it knows which row moved/was removed on updates.
+            ForEach(Array(playlist.songs.enumerated()), id: \.element.id) { index, song in
+                // The entire row is a button — tapping it starts playback.
+                Button(action: {
+                    // Play this song and the rest of the playlist
+                    // Calls the private method below starting at this index.
+                    playFrom(index: index)
+                }) {
+                    // The row is a separate function so the compiler can
+                    // type-check it on its own (the combined expression
+                    // was too large for Swift's type-checker).
+                    songRow(song: song, index: index)
+                }
+                // Removes the default blue highlight when tapping the row.
+                .buttonStyle(.plain)
+                // Adds a swipe gesture on the right edge of the row.
+                .swipeActions(edge: .trailing) {
+                    // A red "destructive" button that appears when swiping.
+                    Button(role: .destructive) {
+                        // Removes this specific song from the playlist.
+                        playlistManager.removeSong(song, from: playlist)
+                    } label: {
+                        // The button shows a trash icon with "Remove" label.
+                        Label("Remove", systemImage: "trash")
+                    }
+                }
+            }
+            // Enables drag-to-reorder on the list rows.
+            // source: the positions being moved; destination: where they land.
+            .onMove { source, destination in
+                // Reorder songs within the playlist
+                // Calls the private reorder method defined below.
+                reorderSongs(from: source, to: destination)
+            }
+        }
+    }
+
+    /// The "…" drop-down menu in the navigation bar: share, rename, delete.
+    @ViewBuilder
+    private var toolbarMenu: some View {
+        // A drop-down menu (three-dot menu on iPhone).
+        Menu {
+            // Share playlist as text
+            // Only show the Share option if there are songs.
+            if !playlist.songs.isEmpty {
+                // A built-in SwiftUI share sheet button.
+                ShareLink(
+                    // The text content to share.
+                    item: playlistShareText,
+                    // Preview shows the playlist name when sharing.
+                    preview: SharePreview(playlist.name)
+                ) {
+                    // The menu item label with share icon.
+                    Label("Share Playlist", systemImage: "square.and.arrow.up")
+                }
+            }
+
+            // A "Rename" button in the menu.
+            Button(action: {
+                // Pre-fills the text field with the current name.
+                renameText = playlist.name
+                // Shows the rename alert as a pop-up.
+                showRenameAlert = true
+            }) {
+                // Menu item with pencil icon.
+                Label("Rename", systemImage: "pencil")
+            }
+
+            // A red "Delete Playlist" button in the menu.
+            Button(role: .destructive, action: {
+                // Permanently deletes the entire playlist.
+                playlistManager.deletePlaylist(playlist)
+            }) {
+                // Menu item with trash icon.
+                Label("Delete Playlist", systemImage: "trash")
+            }
+        } label: {
+            // The three-dot circle icon that opens the menu.
+            Image(systemName: "ellipsis.circle")
+        }
+        // Lets VoiceOver announce what this button does before it's tapped.
+        .accessibilityLabel("Playlist options")
     }
 
     // MARK: - Playback

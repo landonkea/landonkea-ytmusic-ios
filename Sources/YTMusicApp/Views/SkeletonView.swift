@@ -9,21 +9,41 @@ import SwiftUI
 /// Shows a gray rectangle with a moving gradient that creates a "shimmer" effect.
 /// Used to indicate content is loading, giving the user visual feedback that
 /// something is happening (better than a blank screen or spinner).
+///
+/// GLOSSARY (terms explained here the first time they appear in this file):
+/// - **struct**: a Swift value type. Every SwiftUI view is a `struct` that
+///   conforms to (adopts the rules of) the `View` protocol.
+/// - **protocol**: a contract that says "any type that conforms to me must
+///   provide these things." `View` requires a `body` computed property.
+/// - **computed property**: a property (like `body`) whose value is calculated
+///   by running code each time it's accessed, instead of being stored in memory.
+/// - **@State**: a property wrapper (a special annotation starting with `@`)
+///   that tells SwiftUI "this value can change over time, and when it does,
+///   redraw any view that depends on it." State only lives as long as the view
+///   is on screen.
+/// - **view modifier**: a method like `.fill(...)`, `.frame(...)`, or
+///   `.cornerRadius(...)` that returns a new, modified version of a view.
+///   Modifiers are chained together to build up a view's final appearance.
+/// - **declarative UI**: instead of writing step-by-step instructions for how
+///   to draw and update the screen, you describe *what* the UI should look like
+///   for a given state, and SwiftUI figures out how to make the screen match.
 struct SkeletonView: View {
-    
+
     /// The width of the skeleton element in points (e.g. 100 for a 100pt-wide placeholder)
     let width: CGFloat
-    
+
     /// The height of the skeleton element in points (e.g. 100 for a 100pt-tall placeholder)
     let height: CGFloat
-    
+
     /// Corner radius for rounded corners — makes the skeleton look softer by default (8pt)
     let cornerRadius: CGFloat
-    
-    /// The current phase of the shimmer animation (0.0 to 1.0)
-    /// Starts at 0 and animates to 1.0, making the highlight slide across the view
+
+    /// The current phase of the shimmer animation (0.0 to 1.0).
+    /// Starts at 0 and animates to 1.0, making the highlight slide across the view.
+    /// Marked `@State` because this value changes continuously while the view is
+    /// visible (SwiftUI redraws the view every time `phase` updates).
     @State private var phase: CGFloat = 0
-    
+
     /// Creates a skeleton loading placeholder with a shimmer animation
     /// - Parameters:
     ///   - width: The width of the skeleton placeholder
@@ -34,79 +54,38 @@ struct SkeletonView: View {
         self.height = height
         self.cornerRadius = cornerRadius
     }
-    
-    /// The body of the skeleton view — draws the shimmering rectangle
+
+    /// The body of the skeleton view — draws the shimmering rectangle.
+    /// Kept small on purpose: it just lays out the base shape and attaches the
+    /// moving highlight, while the gradients themselves live in their own
+    /// computed properties below (`baseGradient`) and a helper method
+    /// (`movingHighlight(in:)`). Splitting a view into small named pieces like
+    /// this makes each piece easy to read and re-use on its own.
     var body: some View {
-        // GeometryReader gives us access to the view's size and position
+        // GeometryReader is a container view that doesn't draw anything itself —
+        // instead it hands you a `geometry` value describing the size and
+        // position it was given, so its children can size themselves relative
+        // to their parent instead of using a fixed number.
         GeometryReader { geometry in
             // The base shape — a simple filled rectangle
             Rectangle()
-                // Fills the rectangle with a gradient that creates the shimmer effect
-                // The gradient moves from light gray → slightly lighter → light gray
-                .fill(
-                    // LinearGradient creates the shimmer effect
-                    // The gradient moves from light gray (30%) → lighter (50%) → light gray (30%)
-                    LinearGradient(
-                        // Defines the gradient with three color stops
-                        gradient: Gradient(
-                            colors: [
-                                // Darker gray at the start (30% opacity)
-                                Color.gray.opacity(0.3),
-                                // Brighter gray in the middle (50% opacity) — the "shimmer" peak
-                                Color.gray.opacity(0.5),
-                                // Darker gray at the end (30% opacity)
-                                Color.gray.opacity(0.3)
-                            ]
-                        ),
-                        // Gradient starts from the left edge
-                        startPoint: .leading,
-                        // Gradient ends at the right edge
-                        endPoint: .trailing
-                    )
-                )
-                // Apply an overlay that creates the moving highlight
-                .overlay(
-                    // Another GeometryReader to calculate positions relative to this rectangle
-                    GeometryReader { proxy in
-                        // The highlight rectangle moves from left to right
-                        Rectangle()
-                            // Fills the highlight with a transparent → white → transparent gradient
-                            .fill(
-                                LinearGradient(
-                                    // Three stops: clear on both ends, white (30%) in the middle
-                                    gradient: Gradient(
-                                        colors: [
-                                            // Fully transparent on the left edge of the highlight
-                                            .clear,
-                                            // White with 30% opacity in the center of the highlight
-                                            .white.opacity(0.3),
-                                            // Fully transparent on the right edge of the highlight
-                                            .clear
-                                        ]
-                                    ),
-                                    // Highlight gradient also goes left-to-right
-                                    startPoint: .leading,
-                                    // To match the base gradient direction
-                                    endPoint: .trailing
-                                )
-                            )
-                            // The highlight is half the width of the parent rectangle
-                            .frame(width: proxy.size.width * 0.5)
-                            // Offsets the highlight horizontally based on the animation phase
-                            // When phase=0, offset = -0.5 * width (hidden off the left edge)
-                            // When phase=1, offset = +0.5 * width (hidden off the right edge)
-                            .offset(x: proxy.size.width * (phase - 0.5))
-                    }
-                )
-                // Applies rounded corners to both the base and the overlay together
+                // Fills the rectangle with the still (non-moving) gray gradient
+                .fill(baseGradient)
+                // Apply an overlay that draws the moving highlight on top of the base
+                .overlay(movingHighlight)
+                // Applies rounded corners to both the base and the overlay together.
+                // Because `.cornerRadius` is applied after `.overlay`, it clips
+                // both layers as one shape rather than rounding them separately.
                 .cornerRadius(cornerRadius)
         }
         // Constrains the entire GeometryReader to the requested width and height
         .frame(width: width, height: height)
-        // Triggers the shimmer animation when this view first appears on screen
+        // .onAppear runs a closure (a self-contained block of code you can pass
+        // around, like a mini anonymous function) once, the moment this view
+        // first appears on screen.
         .onAppear {
-            // Start the shimmer animation when the view appears
-            // Wraps the phase change in an animation block so it animates smoothly
+            // withAnimation wraps a state change so SwiftUI animates the
+            // transition smoothly instead of jumping instantly to the new value.
             withAnimation(
                 Animation
                     // Uses ease-in-out timing — starts slow, speeds up, ends slow
@@ -119,29 +98,97 @@ struct SkeletonView: View {
             }
         }
     }
+
+    /// The static gray gradient used as the skeleton's base fill.
+    /// Pulled out into its own computed property so `body` stays focused on
+    /// *layout* (what goes where) rather than *coloring* (what it looks like).
+    private var baseGradient: LinearGradient {
+        LinearGradient(
+            // Gradient(colors:) defines a sequence of color "stops" that blend
+            // smoothly into each other.
+            gradient: Gradient(
+                colors: [
+                    // Darker gray at the start (30% opacity)
+                    Color.gray.opacity(0.3),
+                    // Brighter gray in the middle (50% opacity) — the "shimmer" peak
+                    Color.gray.opacity(0.5),
+                    // Darker gray at the end (30% opacity)
+                    Color.gray.opacity(0.3)
+                ]
+            ),
+            // Gradient starts from the left edge
+            startPoint: .leading,
+            // Gradient ends at the right edge
+            endPoint: .trailing
+        )
+    }
+
+    /// The moving highlight band that slides left-to-right to create the
+    /// "shimmer" illusion. Uses its own `GeometryReader` so it can size and
+    /// position itself relative to the rectangle it's overlaid on top of
+    /// (rather than the whole screen).
+    private var movingHighlight: some View {
+        GeometryReader { proxy in
+            Rectangle()
+                // Fills the highlight with a transparent → white → transparent gradient
+                .fill(
+                    LinearGradient(
+                        gradient: Gradient(
+                            colors: [
+                                // Fully transparent on the left edge of the highlight
+                                .clear,
+                                // White with 30% opacity in the center of the highlight
+                                .white.opacity(0.3),
+                                // Fully transparent on the right edge of the highlight
+                                .clear
+                            ]
+                        ),
+                        // Highlight gradient also goes left-to-right,
+                        // to match the base gradient direction
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                // The highlight is half the width of the parent rectangle
+                .frame(width: proxy.size.width * 0.5)
+                // Offsets the highlight horizontally based on the animation phase.
+                // When phase=0, offset = -0.5 * width (hidden off the left edge).
+                // When phase=1, offset = +0.5 * width (hidden off the right edge).
+                // Because `phase` is animated in `body`, this offset smoothly
+                // slides the highlight band all the way across the rectangle.
+                .offset(x: proxy.size.width * (phase - 0.5))
+        }
+    }
 }
 
 // MARK: - Skeleton View Modifier
 
 /// A view modifier that shows a skeleton while loading, then reveals the real content.
 ///
+/// A `ViewModifier` is a reusable piece of view-transforming logic — like the
+/// built-in `.padding()` or `.frame()` modifiers, but one you define yourself.
+/// You implement a `body(content:)` method that receives the original view
+/// (`content`) and returns a new, transformed view.
+///
 /// Usage: `.skeleton(isLoading: isLoading, width: 100, height: 100)`
 /// When isLoading is true, the original view is hidden and a skeleton shows instead.
 /// When isLoading is false, the original content is displayed normally.
 struct SkeletonModifier: ViewModifier {
-    
-    /// Whether the skeleton is currently showing
+
+    /// Whether the skeleton is currently showing.
     /// When true, displays the shimmer placeholder. When false, shows the real content.
     let isLoading: Bool
-    
+
     /// Width of the skeleton placeholder in points
     let width: CGFloat
-    
+
     /// Height of the skeleton placeholder in points
     let height: CGFloat
-    
+
     /// Applies the modifier to the content — replaces with skeleton or shows the real content
-    /// - Parameter content: The original view that this modifier is applied to
+    /// - Parameter content: The original view that this modifier is applied to.
+    ///   `Content` is a placeholder type supplied automatically by SwiftUI —
+    ///   it stands for "whatever view this modifier gets attached to."
     /// - Returns: Either a SkeletonView or the original content
     func body(content: Content) -> some View {
         // If loading, show the shimmer placeholder instead of the real content
@@ -154,7 +201,11 @@ struct SkeletonModifier: ViewModifier {
     }
 }
 
-// Extends the View protocol so every view gets the .skeleton() modifier
+// Extends the View protocol so every view gets the .skeleton() modifier.
+// An `extension` adds new functionality to an existing type (here, the
+// built-in `View` protocol) without needing to edit that type's original
+// definition — this is how SwiftUI lets every view in the app gain a custom
+// `.skeleton(...)` modifier just by importing this file.
 extension View {
     /// Show a skeleton placeholder while content is loading.
     /// - Parameters:
@@ -176,35 +227,56 @@ extension View {
 /// Used in HomeView while the API is fetching data.
 /// Mimics the layout of the real content so the user knows what to expect.
 struct SkeletonSection: View {
-    /// The body of the skeleton section — a vertical stack with header + horizontal cards
+    /// The body of the skeleton section — a vertical stack with header + horizontal cards.
+    /// Kept to just two lines by delegating to `sectionHeader` and `cardsRow`
+    /// below, so each part can be read (and changed) independently.
     var body: some View {
         // A vertical stack aligned to the left with 12pt spacing
         VStack(alignment: .leading, spacing: 12) {
-            // Section header skeleton — a short wide rectangle for the section title
-            SkeletonView(width: 150, height: 20, cornerRadius: 4)
-                // Adds horizontal padding to match the real content's layout
-                .padding(.horizontal)
-            
-            // Horizontal row of card skeletons — scrollable like the real content
-            ScrollView(.horizontal, showsIndicators: false) {
-                // A horizontal stack with 12pt spacing between cards
-                HStack(spacing: 12) {
-                    // Creates 4 identical card skeletons using a ForEach loop
-                    ForEach(0..<4, id: \.self) { _ in
-                        // Each card is a vertical stack with album art, title, and artist
-                        VStack(alignment: .leading, spacing: 6) {
-                            // Album art skeleton — a square placeholder (120x120)
-                            SkeletonView(width: 120, height: 120, cornerRadius: 8)
-                            // Title skeleton — a wide thin rectangle for the song name
-                            SkeletonView(width: 100, height: 12, cornerRadius: 4)
-                            // Artist skeleton — a narrower thin rectangle for the artist name
-                            SkeletonView(width: 80, height: 10, cornerRadius: 4)
-                        }
-                    }
+            sectionHeader
+            cardsRow
+        }
+    }
+
+    /// Section header skeleton — a short wide rectangle standing in for the section title.
+    private var sectionHeader: some View {
+        SkeletonView(width: 150, height: 20, cornerRadius: 4)
+            // Adds horizontal padding to match the real content's layout
+            .padding(.horizontal)
+    }
+
+    /// Horizontal, scrollable row of card skeletons — mimics the real content's carousel.
+    private var cardsRow: some View {
+        // ScrollView(.horizontal) makes its contents scroll sideways instead
+        // of the default up/down; `showsIndicators: false` hides the little
+        // scrollbar that would otherwise flash on screen.
+        ScrollView(.horizontal, showsIndicators: false) {
+            // A horizontal stack with 12pt spacing between cards
+            HStack(spacing: 12) {
+                // ForEach repeats its content once per element in a sequence.
+                // `0..<4` is a range meaning "0, 1, 2, 3" (four values), and
+                // `id: \.self` tells SwiftUI to use each number itself as the
+                // unique identifier for that loop iteration (since plain Ints
+                // don't otherwise carry any built-in identity). The `_` means
+                // we don't need to use the loop value inside the closure.
+                ForEach(0..<4, id: \.self) { _ in
+                    cardSkeleton
                 }
-                // Adds horizontal padding to the entire row of cards
-                .padding(.horizontal)
             }
+            // Adds horizontal padding to the entire row of cards
+            .padding(.horizontal)
+        }
+    }
+
+    /// A single card skeleton — album art placeholder above title/artist placeholders.
+    private var cardSkeleton: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Album art skeleton — a square placeholder (120x120)
+            SkeletonView(width: 120, height: 120, cornerRadius: 8)
+            // Title skeleton — a wide thin rectangle for the song name
+            SkeletonView(width: 100, height: 12, cornerRadius: 4)
+            // Artist skeleton — a narrower thin rectangle for the artist name
+            SkeletonView(width: 80, height: 10, cornerRadius: 4)
         }
     }
 }
