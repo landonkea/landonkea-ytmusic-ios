@@ -158,16 +158,27 @@ class EqualizerEngine {
             return
         }
         
+        // Stop any existing playback and clear the graph before reconfiguring.
+        //
+        // BUG FIX: this used to run AFTER `self.audioFile = file` was set
+        // below. stopInternal() sets `audioFile = nil` as part of tearing
+        // down the previous playback session — so calling it after
+        // assigning the new file immediately wiped the reference right
+        // back out again. scheduleSegment() (called further down) reads
+        // `audioFile` and silently does nothing if it's nil, which meant
+        // the engine would start "playing" with nothing actually
+        // scheduled — dead silence, with no error. Running stopInternal()
+        // FIRST (before the new file is assigned) means it only ever
+        // clears the OLD file, never the one we're about to play.
+        stopInternal()
+
         // Keep a reference to the file (needed for seeking)
         self.audioFile = file
         // Remember the sample rate for second↔frame conversions
         self.sampleRate = file.processingFormat.sampleRate
         // Compute the duration: total frames ÷ frames per second
         self.fileDuration = Double(file.length) / sampleRate
-        
-        // Stop any existing playback and clear the graph before reconfiguring
-        stopInternal()
-        
+
         // Build the audio graph (connect nodes in the right order)
         buildGraph(format: file.processingFormat)
         // Configure the EQ bands with the chosen frequencies and gains

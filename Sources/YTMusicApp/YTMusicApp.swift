@@ -190,7 +190,16 @@ class APIClient: ObservableObject {
     
     /// Load the YouTube Music trending charts.
     ///
-    /// Called by HomeView to show top songs and trending content.
+    /// Called by HomeView to show top songs and trending content, typically
+    /// alongside `loadHome()` (HomeView kicks them off together with
+    /// `async let`, so both requests run concurrently instead of one after
+    /// the other).
+    ///
+    /// Unlike `search`/`loadHome`, this intentionally does NOT touch
+    /// `isLoading`/`errorMessage` — HomeView's loading spinner and error
+    /// banner are driven by `loadHome()`, and charts are treated as a
+    /// secondary, best-effort section: if this fails, we just log it and
+    /// leave `chartsSections` as-is rather than surfacing an error to the user.
     func loadCharts() async {
         do {
             let sections = try await client.getCharts()

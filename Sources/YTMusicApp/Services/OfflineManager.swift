@@ -77,42 +77,73 @@ class OfflineManager: NSObject, ObservableObject {
     // MARK: - Initialization
     
     override init() {
-        // We override NSObject's init() because OfflineManager
-        // subclasses NSObject (for URLSessionDownloadDelegate).
-        // The 'override' keyword is required by Swift.
+        // We override NSObject's init() because OfflineManager subclasses
+        // NSObject — this is required so it can conform to
+        // URLSessionDownloadDelegate below (a protocol that, like many
+        // older Apple APIs, only works with NSObject-based classes).
+        // The `override` keyword is required by Swift whenever a subclass
+        // provides its own version of a method/initializer the superclass
+        // already defines.
         //
-        // Get the app's Documents directory
-        // FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
-        // returns the Documents directory for the current user.
-        // [0] because there's typically only one match.
+        // Get the app's Documents directory.
+        // `FileManager.default` is a shared, ready-to-use instance for
+        // interacting with the filesystem. `.urls(for:in:)` returns an
+        // array of matching directory URLs; we take `[0]` because on iOS
+        // there's always exactly one Documents directory per app.
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         self.documentsPath = documents
         self.downloadsPath = documents.appendingPathComponent("Downloads")
         self.indexFilePath = documents.appendingPathComponent("downloads.json")
-        
-        // Call super.init() AFTER all stored properties are set.
+
+        // Call super.init() AFTER all of OUR stored properties are set.
+        // Swift requires this ordering: a subclass must finish
+        // initializing its own properties before handing control to the
+        // superclass's initializer.
         super.init()
-        
-        // Create the Downloads directory if it doesn't exist
-        try? FileManager.default.createDirectory(at: downloadsPath, withIntermediateDirectories: true)
-        
-        // Load the download index from disk
+
+        // Now that `self` is fully initialized, finish the rest of setup
+        // in small, focused helper methods.
+        prepareDownloadsDirectory()
         loadIndex()
-        
-        // Set up the background URL session
+        session = Self.makeBackgroundSession(delegate: self)
+    }
+
+    /// Create the Downloads subdirectory on disk if it doesn't already exist.
+    /// `try?` converts a throwing call into an optional-discarding one —
+    /// if directory creation fails (e.g. it already exists), we simply
+    /// ignore the error rather than crashing the app at launch.
+    private func prepareDownloadsDirectory() {
+        try? FileManager.default.createDirectory(at: downloadsPath, withIntermediateDirectories: true)
+    }
+
+    /// Build the background URLSession used for all downloads.
+    ///
+    /// WHAT IS A "background URLSession"? A normal URLSession's transfers
+    /// stop if the app is suspended or terminated by the system. A
+    /// background session hands the actual networking off to a separate OS
+    /// process, so downloads keep progressing even while our app isn't
+    /// running in the foreground — iOS briefly wakes the app to deliver
+    /// delegate callbacks when a transfer finishes.
+    ///
+    /// This is a `static` function (rather than an instance method) so it
+    /// can be called from `init()` before `self` has a `session` property
+    /// value yet, taking the delegate as an explicit parameter instead of
+    /// implicitly capturing `self`.
+    private static func makeBackgroundSession(delegate: URLSessionDownloadDelegate) -> URLSession {
         // Background sessions use a unique identifier string so iOS can
-        // reconnect to the same session when the app relaunches.
-        
-        // Background configuration allows downloads to continue when the app
-        // is suspended or in the background. The system manages the download
-        // and wakes the app when it's done.
+        // reconnect to the same session when the app relaunches after
+        // being suspended or terminated mid-download.
         let config = URLSessionConfiguration.background(withIdentifier: "com.landonkea.ytmusic.downloads")
         config.isDiscretionary = false  // Download immediately, not when the system decides
         config.shouldUseExtendedBackgroundIdleMode = true  // Keep network alive longer
-        
-        // Create the session with self as delegate
-        // NSObject conformance above makes this possible
-        self.session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+
+        // `delegateQueue: nil` tells URLSession to create its own private
+        // background queue for delegate callbacks (progress, completion,
+        // etc.) rather than using the main queue — which is exactly why
+        // every delegate method below is `nonisolated` and hops back to
+        // the main actor via `DispatchQueue.main.async` before touching
+        // any of this class's main-actor-isolated state.
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
     
     // MARK: - Public Methods
@@ -170,70 +201,93 @@ class OfflineManager: NSObject, ObservableObject {
     ) async {
         // Don't download if already downloaded or currently downloading
         guard !isDownloaded(videoId), !isDownloading(videoId) else { return }
-        
-        // Create a unique filename using the video ID
-        // We add .m4a extension because YouTube streams are typically AAC audio in MP4 container
-        let fileName = "\(videoId).m4a"
-        let fileURL = downloadsPath.appendingPathComponent(fileName)
-        
-        // Start with 0% progress
+
+        guard let url = URL(string: audioUrl) else { return }
+
+        // Start with 0% progress. Setting this before the `await` below is
+        // what makes `isDownloading(videoId)` return true immediately.
         downloading[videoId] = 0.0
-        
+
         do {
-            // Create the download task
-            guard let url = URL(string: audioUrl) else {
-                downloading.removeValue(forKey: videoId)
-                return
-            }
-            
-            // Use continuation to bridge the delegate-based background download
-            // to the async/await pattern. The delegate callback will resume
-            // this continuation when the download finishes.
-            //
-            // IMPORTANT: The delegate methods below (URLSessionDownloadDelegate)
-            // handle the actual download lifecycle and call the continuation.
-            let tempURL: URL = try await withCheckedThrowingContinuation { continuation in
-                // Create a download task — this works with background sessions
-                let task = session.downloadTask(with: url)
-                
-                // Store the continuation associated with this task
-                // so the delegate can find it when the download completes
-                downloadContinuations[task.taskIdentifier] = continuation
-                // Track which video this task belongs to
-                taskIdToVideoId[task.taskIdentifier] = videoId
-                
-                // Start the download (system continues it in background)
-                task.resume()
-            }
-            
-            // Move the downloaded file to our Downloads directory
-            // FileManager.default.moveItem replaces the destination if it exists
-            if FileManager.default.fileExists(atPath: fileURL.path) {
-                try FileManager.default.removeItem(at: fileURL)
-            }
-            try FileManager.default.moveItem(at: tempURL, to: fileURL)
-            
-            // Create the download record
-            let song = DownloadedSong(
-                videoId: videoId,
-                title: title,
-                artist: artist,
-                thumbnailUrl: thumbnailUrl,
-                fileName: fileName,
-                downloadDate: Date()
-            )
-            
-            // Add to our list and save the index
-            downloads.append(song)
-            saveIndex()
-            
-            // Remove from downloading list
-            downloading.removeValue(forKey: videoId)
-            
+            let tempURL = try await runDownloadTask(for: url, videoId: videoId)
+            let fileName = try storeDownloadedFile(from: tempURL, videoId: videoId)
+            recordDownload(videoId: videoId, title: title, artist: artist, thumbnailUrl: thumbnailUrl, fileName: fileName)
         } catch {
             print("Download failed: \(error)")
-            downloading.removeValue(forKey: videoId)
         }
+
+        // Whether we succeeded or failed, this video is no longer "in
+        // progress" — always clear it so the UI stops showing a progress bar.
+        downloading.removeValue(forKey: videoId)
+    }
+
+    /// Start a URLSession background download task for `url` and suspend
+    /// until it finishes, using a checked continuation to bridge the
+    /// delegate-based (callback-style) URLSession API into async/await.
+    ///
+    /// WHAT IS "withCheckedThrowingContinuation"? Some older or
+    /// callback-based Apple APIs (like URLSessionDownloadDelegate below)
+    /// don't support `async`/`await` natively. This function lets us wrap
+    /// such an API: we get a `continuation` object, hand it off to be
+    /// "resumed" later (from the delegate callback, possibly on a totally
+    /// different thread/queue), and our `await` here doesn't return until
+    /// someone calls `continuation.resume(...)`. "Checked" means Swift
+    /// verifies at runtime that we resume it exactly once — resuming twice,
+    /// or never resuming it at all, is a programming error it will flag.
+    ///
+    /// - Returns: The temporary file URL where the OS placed the downloaded data.
+    private func runDownloadTask(for url: URL, videoId: String) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            // Create a download task — this works with background sessions.
+            let task = session.downloadTask(with: url)
+
+            // Store the continuation associated with this task's unique ID
+            // so the delegate methods (which only receive a task, not our
+            // `continuation` variable) can look it up and resume it later.
+            downloadContinuations[task.taskIdentifier] = continuation
+            // Track which video this task belongs to, so progress/completion
+            // callbacks (identified only by task ID) can update the right
+            // entry in `downloading`.
+            taskIdToVideoId[task.taskIdentifier] = videoId
+
+            // Start the download (system continues it in the background).
+            task.resume()
+        }
+    }
+
+    /// Move a freshly downloaded temp file into our permanent Downloads
+    /// directory, using the video ID as the filename.
+    ///
+    /// - Returns: The filename the file was stored under (for the index record).
+    private func storeDownloadedFile(from tempURL: URL, videoId: String) throws -> String {
+        // Create a unique filename using the video ID.
+        // We add the .m4a extension because YouTube streams are typically
+        // AAC audio in an MP4 container.
+        let fileName = "\(videoId).m4a"
+        let fileURL = downloadsPath.appendingPathComponent(fileName)
+
+        // `moveItem` throws if the destination already exists, so remove
+        // any stale leftover file first (e.g. from a previous failed run).
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            try FileManager.default.removeItem(at: fileURL)
+        }
+        try FileManager.default.moveItem(at: tempURL, to: fileURL)
+        return fileName
+    }
+
+    /// Append a new DownloadedSong record to `downloads` and persist the
+    /// updated index to disk.
+    private func recordDownload(videoId: String, title: String, artist: String, thumbnailUrl: String, fileName: String) {
+        let song = DownloadedSong(
+            videoId: videoId,
+            title: title,
+            artist: artist,
+            thumbnailUrl: thumbnailUrl,
+            fileName: fileName,
+            downloadDate: Date()
+        )
+        downloads.append(song)
+        saveIndex()
     }
     
     /// Delete a downloaded song.
@@ -284,15 +338,48 @@ class OfflineManager: NSObject, ObservableObject {
     func cancelDownload(videoId: String) {
         // Remove from progress tracking
         downloading.removeValue(forKey: videoId)
-        
-        // Find and cancel the URLSession task
-        // We iterate over all tasks to find the matching one
+
+        // Find and cancel the URLSession task.
+        // `getAllTasks` is itself asynchronous (it calls back with the
+        // list of tasks once available), and — importantly — its
+        // completion closure runs on the URLSession's own background
+        // delegate queue, NOT the main thread. Since OfflineManager is
+        // `@MainActor` (all its stored properties are expected to only be
+        // touched from the main thread), we must hop back to the main
+        // actor with `Task { @MainActor in ... }` before reading or
+        // mutating `taskIdToVideoId` / `downloadContinuations`.
+        // (This mirrors the DispatchQueue.main.async hops used by the
+        // URLSessionDownloadDelegate methods below, for the same reason.)
         session.getAllTasks { [weak self] tasks in
-            for task in tasks {
-                if self?.taskIdToVideoId[task.taskIdentifier] == videoId {
+            // `weak self` here means "don't keep OfflineManager alive just
+            // because this closure exists" (avoiding a retain cycle if the
+            // manager were ever deallocated while this callback is in
+            // flight). We resolve it to a plain, temporarily-strong local
+            // `self` once via `guard let self`; capturing that local
+            // constant in the `Task` below for its brief lifetime is safe
+            // and simpler than nesting another `[weak self]`.
+            guard let self else { return }
+            Task { @MainActor in
+                for task in tasks {
+                    guard self.taskIdToVideoId[task.taskIdentifier] == videoId else { continue }
+
                     task.cancel()
-                    self?.taskIdToVideoId.removeValue(forKey: task.taskIdentifier)
-                    self?.downloadContinuations.removeValue(forKey: task.taskIdentifier)
+                    self.taskIdToVideoId.removeValue(forKey: task.taskIdentifier)
+
+                    // BUG FIX: previously the continuation was removed from
+                    // the dictionary here WITHOUT being resumed. A
+                    // `CheckedContinuation` that is dropped without ever
+                    // calling `resume` never lets its `await`-ing caller
+                    // continue — the `Task` inside `download(...)` (and
+                    // whatever code is awaiting that call) would hang
+                    // forever, leaking memory and, in debug builds, tripping
+                    // Swift's "leaking its continuation" runtime warning.
+                    // We now resume it with a `CancellationError` so
+                    // `download(...)`'s `catch` block runs and cleans up
+                    // normally.
+                    if let continuation = self.downloadContinuations.removeValue(forKey: task.taskIdentifier) {
+                        continuation.resume(throwing: CancellationError())
+                    }
                     break
                 }
             }
@@ -306,33 +393,50 @@ class OfflineManager: NSObject, ObservableObject {
     /// We store a JSON array of DownloadedSong objects in Documents/downloads.json.
     /// This lets us quickly load the list of downloads on app launch
     /// without scanning the entire file system.
+    ///
+    /// WHAT IS "Codable"/"JSONEncoder"? `DownloadedSong` (below) is declared
+    /// `Codable`, meaning Swift knows how to automatically turn it into (and
+    /// back from) JSON. `JSONEncoder().encode(downloads)` converts the whole
+    /// array into raw JSON bytes (`Data`) with no manual string-building.
+    /// `dateEncodingStrategy = .iso8601` tells it to write `downloadDate` as
+    /// a standard "2026-08-02T10:00:00Z"-style string rather than a raw
+    /// number, which is both human-readable and unambiguous across devices.
     private func saveIndex() {
         do {
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             let data = try encoder.encode(downloads)
+            // `Data.write(to:)` writes the raw bytes to disk at the given
+            // file URL, overwriting anything already there.
             try data.write(to: indexFilePath)
         } catch {
             print("Failed to save download index: \(error)")
         }
     }
-    
+
     /// Load the download index from disk.
     ///
     /// Called on init to populate the downloads array.
     /// Also verifies that each file actually exists (in case files were deleted externally).
     private func loadIndex() {
+        // If we've never saved an index before (e.g. first launch), there's
+        // nothing to load — leave `downloads` as its default empty array.
         guard FileManager.default.fileExists(atPath: indexFilePath.path) else {
             return
         }
-        
+
         do {
             let data = try Data(contentsOf: indexFilePath)
             let decoder = JSONDecoder()
+            // Must match the `.iso8601` strategy used in `saveIndex()` above,
+            // or decoding dates would fail.
             decoder.dateDecodingStrategy = .iso8601
             downloads = try decoder.decode([DownloadedSong].self, from: data)
-            
-            // Verify files exist — remove any entries whose files are missing
+
+            // Verify files exist — remove any entries whose files are
+            // missing (e.g. deleted by iOS to free up storage, or removed
+            // outside the app). `filter` keeps only the elements for which
+            // the closure returns true.
             downloads = downloads.filter { song in
                 let fileURL = downloadsPath.appendingPathComponent(song.fileName)
                 return FileManager.default.fileExists(atPath: fileURL.path)
@@ -390,22 +494,62 @@ extension OfflineManager: URLSessionDownloadDelegate {
         didFinishDownloadingTo location: URL
     ) {
         let taskId = downloadTask.taskIdentifier
-        
-        // Get the temp file URL to the main actor, where the
-        // continuation dictionary lives, and resume the continuation.
-        // (The removed code tried MainActor.runSync, which does not
-        // exist — DispatchQueue.main.async is the correct approach
-        // and avoids deadlocks.)
+
+        // BUG FIX: Apple's documentation for this delegate method is very
+        // explicit — the file at `location` is a temporary file that the
+        // system deletes as soon as THIS METHOD RETURNS. The previous code
+        // just hopped to the main actor with `DispatchQueue.main.async` and
+        // resumed the continuation with `location` itself; by the time that
+        // async block actually ran (and `download(...)` later tried to
+        // `moveItem` from it), the OS may well have already deleted the
+        // file out from under us, causing sporadic, hard-to-reproduce
+        // "download failed" errors.
+        //
+        // The fix: synchronously (before returning from this method) move
+        // the file into a location WE control — the system temp directory,
+        // under a name it won't touch — and only then hop to the main
+        // actor to resume the continuation with that safe URL.
+        let safeTempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("m4a")
+
+        do {
+            try FileManager.default.moveItem(at: location, to: safeTempURL)
+        } catch {
+            // Couldn't even rescue the file — report the failure instead.
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                if let continuation = self.downloadContinuations.removeValue(forKey: taskId) {
+                    continuation.resume(throwing: error)
+                }
+                self.taskIdToVideoId.removeValue(forKey: taskId)
+            }
+            return
+        }
+
+        // Now that the file is safely relocated, hop to the main actor
+        // (where `downloadContinuations`/`taskIdToVideoId` live) to resume
+        // the continuation and finish bookkeeping.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             if let continuation = self.downloadContinuations.removeValue(forKey: taskId) {
-                continuation.resume(returning: location)
+                continuation.resume(returning: safeTempURL)
+            } else {
+                // Nobody is waiting for this anymore — e.g. the download
+                // was cancelled after the file already finished. Clean up
+                // our rescued temp file ourselves so it doesn't linger on
+                // disk forever.
+                try? FileManager.default.removeItem(at: safeTempURL)
             }
             self.taskIdToVideoId.removeValue(forKey: taskId)
         }
     }
     
-    /// Called when a download task fails.
+    /// Called when a download task finishes for ANY reason — success or
+    /// failure. iOS calls this even after a successful download (in
+    /// addition to `didFinishDownloadingTo` above), but with `error == nil`
+    /// in that case. Since we only care about failures here (the success
+    /// path is already handled above), we only act when `error` is non-nil.
     nonisolated func urlSession(
         _ session: URLSession,
         task: URLSessionTask,

@@ -15,13 +15,20 @@ import SwiftUI
 /// - 2 (Large): body = 20px (title3)
 struct FontSizeModifier: ViewModifier {
     
-    /// The font size scale setting (0 = small, 1 = medium, 2 = large)
+    /// The font size scale setting (0 = small, 1 = medium, 2 = large).
+    ///
+    /// `@AppStorage` automatically reads/writes this value to `UserDefaults`
+    /// (the system's small persistent key-value store) under the key
+    /// "fontSizeScale" — so whatever the user last picked in Settings is
+    /// remembered across app launches, with no manual save/load code needed.
     @AppStorage("fontSizeScale") private var scale = 1
-    
+
     func body(content: Content) -> some View {
         content
-            // Apply a dynamic type size based on the scale
+            // Set the base text style used before dynamic type scaling is applied.
             .font(.body)
+            // Override the environment's dynamic type size for this view (and
+            // everything below it) with the size mapped from `scale`.
             .environment(\.dynamicTypeSize, dynamicTypeSize)
     }
     

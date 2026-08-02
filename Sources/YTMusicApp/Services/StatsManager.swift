@@ -18,14 +18,24 @@ import SwiftUI
 ///
 /// PERSISTENCE:
 /// - Stored as JSON in the Documents directory
-/// - Sessions older than 1 year are pruned to save space
+/// - Capped at the most recent 500 sessions (see `trimToMaxSessions()`) —
+///   older sessions are dropped by count, not by age, to keep the saved
+///   file small.
 @MainActor
 class StatsManager: ObservableObject {
     
     // MARK: - Types
     
     /// A single listen session — recorded when a song is played for >10 seconds.
+    ///
+    /// - `Codable` means Swift can automatically convert this struct to/from
+    ///   JSON (used below to save/load sessions to a file).
+    /// - `Identifiable` means it has a unique `id`, which SwiftUI lists use
+    ///   to tell rows apart (e.g. in a "recently played" screen).
     struct ListenSession: Codable, Identifiable {
+        // UUID = "Universally Unique Identifier" — a randomly generated ID
+        // that's essentially guaranteed not to collide with any other UUID
+        // ever generated, so it's a safe stand-in for a database row ID.
         let id: UUID
         let videoId: String
         let title: String
@@ -43,6 +53,9 @@ class StatsManager: ObservableObject {
     
     /// Total time listened in seconds.
     var totalTimeListened: TimeInterval {
+        // `reduce` walks the array and combines every element into a single
+        // value: starting from 0, it repeatedly adds each session's
+        // `durationPlayed` to the running total ($0), producing one final sum.
         sessions.reduce(0) { $0 + $1.durationPlayed }
     }
     
@@ -58,32 +71,53 @@ class StatsManager: ObservableObject {
     }
     
     /// Get the top N most played songs.
+    ///
+    /// HOW: builds a dictionary keyed by videoId that tallies how many times
+    /// each song appears in `sessions`, then sorts that tally by count.
+    /// A dictionary is used (rather than, say, filtering the array per song)
+    /// so every session is only looked at once — an O(n) pass instead of
+    /// O(n²) for large listening histories.
     func mostPlayedSongs(limit: Int = 20) -> [(videoId: String, title: String, artist: String, count: Int)] {
+        // Each dictionary value bundles the song's display info alongside its
+        // running play count, so we don't need a second lookup later to find
+        // the title/artist that go with a given count.
         var counts: [String: (title: String, artist: String, count: Int)] = [:]
-        
+
         for session in sessions {
             if var entry = counts[session.videoId] {
+                // We've seen this song before — bump its count.
+                // `var entry` makes a local mutable copy (dictionary values
+                // are structs/tuples here, which are value types), so we have
+                // to write it back into the dictionary explicitly below.
                 entry.count += 1
                 counts[session.videoId] = entry
             } else {
+                // First time seeing this song — start its count at 1.
                 counts[session.videoId] = (session.title, session.artist, 1)
             }
         }
-        
+
         return counts
-            .sorted { $0.value.count > $1.value.count }
-            .prefix(limit)
+            .sorted { $0.value.count > $1.value.count } // Highest play count first
+            .prefix(limit) // Keep only the top `limit` entries
             .map { (videoId: $0.key, title: $0.value.title, artist: $0.value.artist, count: $0.value.count) }
     }
-    
+
     /// Top artists by listen count.
+    ///
+    /// Same aggregate-then-sort approach as `mostPlayedSongs`, but keyed by
+    /// artist name instead of videoId, and the count is the only thing we
+    /// need to track per artist (so a plain `Int` dictionary value is enough).
     func topArtists(limit: Int = 10) -> [(artist: String, count: Int)] {
         var counts: [String: Int] = [:]
-        
+
         for session in sessions {
+            // `default: 0` means: if `session.artist` isn't a key yet, treat
+            // its current count as 0 before adding 1 — avoids writing a
+            // separate "if this is the first time" branch like above.
             counts[session.artist, default: 0] += 1
         }
-        
+
         return counts
             .sorted { $0.value > $1.value }
             .prefix(limit)
@@ -113,8 +147,18 @@ class StatsManager: ObservableObject {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         fileURL = documents.appendingPathComponent("listen_sessions.json")
         load()
-        
-        // Observe song finish notifications to record listening stats
+
+        // NotificationCenter is a system-wide message bus: any object can
+        // "post" a named notification, and any object can "observe" (listen
+        // for) it without the two knowing about each other directly. This is
+        // how AudioPlayer tells StatsManager "a song just finished" without
+        // AudioPlayer needing to hold a reference to StatsManager at all.
+        //
+        // `selector:` points at the method to call when the notification
+        // fires — `#selector(songDidFinish(_:))` refers to the `@objc` method
+        // below. `@objc` is required here because this old-style
+        // target/selector API comes from Objective-C and needs the method to
+        // be visible to the Objective-C runtime.
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(songDidFinish(_:)),
@@ -122,15 +166,26 @@ class StatsManager: ObservableObject {
             object: nil
         )
     }
-    
+
     deinit {
+        // NotificationCenter keeps a reference to `self` as long as it's
+        // registered as an observer. Removing it here ensures that reference
+        // is dropped and that this object doesn't keep receiving
+        // notifications (which would crash, since `self` would already be
+        // deallocated) after it goes away.
         NotificationCenter.default.removeObserver(self)
     }
-    
+
     // MARK: - Notification Handler
-    
+
     /// Called when a song finishes playing naturally.
     @objc private func songDidFinish(_ notification: Notification) {
+        // Notifications carry an optional, untyped `userInfo` dictionary —
+        // the poster (AudioPlayer) packs values into it as `[String: Any]`,
+        // and we have to unpack and type-check each one here. The single
+        // `guard ... else { return }` bails out silently if any expected key
+        // is missing or the wrong type, which shouldn't normally happen but
+        // protects us from a crash if the posting side ever changes.
         guard let userInfo = notification.userInfo,
               let videoId = userInfo["videoId"] as? String,
               let title = userInfo["title"] as? String,
@@ -138,7 +193,7 @@ class StatsManager: ObservableObject {
               let durationPlayed = userInfo["durationPlayed"] as? Double else {
             return
         }
-        
+
         recordPlay(videoId: videoId, title: title, artist: artist, durationPlayed: durationPlayed)
     }
     
@@ -160,13 +215,19 @@ class StatsManager: ObservableObject {
         )
         
         sessions.append(session)
-        
-        // Keep only last 500 sessions
-        if sessions.count > 500 {
-            sessions = Array(sessions.suffix(500))
-        }
-        
+        trimToMaxSessions()
         save()
+    }
+
+    /// Cap `sessions` at the last 500 entries so the history file doesn't
+    /// grow without bound. Pulled out of `recordPlay` so each method does
+    /// exactly one thing: `recordPlay` records, this trims.
+    private func trimToMaxSessions() {
+        let maxSessions = 500
+        guard sessions.count > maxSessions else { return }
+        // `.suffix(500)` keeps the most recent 500 (sessions are appended in
+        // chronological order, so the tail of the array is the newest).
+        sessions = Array(sessions.suffix(maxSessions))
     }
     
     // MARK: - Persistence

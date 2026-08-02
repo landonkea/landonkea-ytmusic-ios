@@ -298,22 +298,15 @@ class AudioPlayer: ObservableObject {
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.allowsExternalPlayback = true
         
-        // Set up time observer (same as playSong)
-        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
-        timeObserverToken = newPlayer.addPeriodicTimeObserver(
-            forInterval: interval,
-            queue: .main
-        ) { [weak self] time in
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.currentTime = time.seconds
-                self.updateNowPlayingInfo()
-                if time.seconds >= self.duration && self.duration > 0 {
-                    self.handleSongEnded()
-                }
-            }
-        }
-        
+        // Set up a time observer so currentTime/duration stay in sync and
+        // we detect when the song ends. This uses the SAME shared helper as
+        // playSong() below, so every playback path (streamed, local,
+        // crossfade) behaves identically — including posting the
+        // songDidFinishPlaying notification used for scrobbling/stats.
+        // (Previously this path built its own closure that skipped the
+        // notification — that inconsistency is now fixed.)
+        attachTimeObserver(to: newPlayer)
+
         self.player = newPlayer
         self.currentSong = song
         self.state = .loading
@@ -324,8 +317,12 @@ class AudioPlayer: ObservableObject {
             self.duration = Double(song.duration)
         }
         self.currentTime = 0
-        
+
         newPlayer.play()
+        // Apply the current playback speed. (Previously this path never set
+        // .rate, so locally-played songs silently ignored the playback
+        // speed setting — fixed to match the streaming path below.)
+        newPlayer.rate = Float(playbackRate)
         self.state = .playing
         updateNowPlayingInfo()
         // Track this song in recently played history
@@ -447,45 +444,88 @@ class AudioPlayer: ObservableObject {
         let newPlayer = AVPlayer(playerItem: playerItem)
         newPlayer.allowsExternalPlayback = true  // Enable AirPlay output
         
-        // Step 5: Set up periodic time observer
-        //
-        // WHAT THIS DOES:
-        // Registers a callback that fires every 0.5 seconds while playing.
-        // The callback receives the current playback time and we use it to:
-        //   - Update currentTime (for progress bars and time labels)
-        //   - Update Now Playing info (for Control Center)
-        //   - Detect when the song ends (to play next)
-        //
+        // Step 5: Set up a periodic time observer.
+        // See attachTimeObserver(to:) below for the full explanation of
+        // what this does and why — every playback path in this file shares
+        // that one implementation so behavior stays consistent.
+        attachTimeObserver(to: newPlayer)
+
+        // Step 6: Update the player state
+        self.player = newPlayer
+        self.currentSong = song
+        self.state = .loading  // Brief loading state before playback starts
+        self.duration = Double(song.duration) // Convert Int seconds to Double
+        self.currentTime = 0   // Start at the beginning
+        
+        // Step 7: Start playback!
+        newPlayer.play()
+        // Apply current playback speed
+        newPlayer.rate = Float(playbackRate)
+        self.state = .playing
+        
+        // Step 8: Update Control Center / lock screen
+        updateNowPlayingInfo()
+        // Track this song in recently played history
+        addToRecentlyPlayed(song)
+    }
+    
+    /// Attach a periodic time observer to an AVPlayer and store its token.
+    ///
+    /// WHAT THIS DOES:
+    /// Registers a callback that fires every 0.5 seconds while `player` is
+    /// playing. The callback receives the current playback time and uses
+    /// it to:
+    ///   - Update currentTime (for progress bars and time labels)
+    ///   - Update Now Playing info (for Control Center)
+    ///   - Detect when the song ends (posting a notification, then
+    ///     handing off to handleSongEnded() to advance the queue)
+    ///
+    /// WHY IT'S SHARED:
+    /// Three different call sites need this exact same observer (normal
+    /// streaming playback, local-file playback, and the "new" player during
+    /// a crossfade). Previously each one duplicated this closure by hand,
+    /// which had drifted out of sync — e.g. the local-file path forgot to
+    /// post the songDidFinishPlaying notification. Having one shared
+    /// implementation means every path behaves identically and future
+    /// changes only need to happen in one place.
+    ///
+    /// - Parameter player: The AVPlayer to observe. Its token is saved into
+    ///   `timeObserverToken` so `stopPlayer()` can remove it later.
+    private func attachTimeObserver(to player: AVPlayer) {
         // CMTime = Core Media Time — Apple's way of representing time precisely.
         // `seconds: 0.5` = fire every 0.5 seconds
         // `preferredTimescale: 600` = time precision. 600 means times are accurate
         // to 1/600th of a second (about 1.67ms). Higher = more precise but more CPU.
         // 600 is a good balance for music playback.
         let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
-        
-        // addPeriodicTimeObserver returns an opaque token we must save
-        timeObserverToken = newPlayer.addPeriodicTimeObserver(
+
+        // addPeriodicTimeObserver returns an opaque token we must save so
+        // we can remove the observer later (see stopPlayer()) — failing to
+        // remove it would leak memory and keep firing after the player is
+        // gone.
+        timeObserverToken = player.addPeriodicTimeObserver(
             forInterval: interval,
             queue: .main  // Run on the main thread (required for UI updates)
         ) { [weak self] time in
             // [weak self] = "don't keep a strong reference to self".
             // This prevents a RETAIN CYCLE (memory leak):
             //   AudioPlayer owns player → player's closure owns AudioPlayer → leak!
-            // With [weak self], if AudioPlayer is deallocated, self becomes nil.
-            
+            // With [weak self], if AudioPlayer is deallocated, self becomes nil
+            // instead of being kept alive forever by this closure.
+
             // The closure runs on a background thread, but we need to update
             // @Published properties on the main thread. Task { @MainActor in }
             // creates an async task that runs on the main actor (main thread).
             Task { @MainActor in
                 // Guard: if self was deallocated, stop
                 guard let self = self else { return }
-                
+
                 // Update the current playback position
                 self.currentTime = time.seconds
-                
+
                 // Update Control Center / lock screen info
                 self.updateNowPlayingInfo()
-                
+
                 // Check if the song has ended
                 // `time.seconds >= self.duration` = we've reached the end
                 // `self.duration > 0` = guard against duration being 0 (which would
@@ -508,26 +548,8 @@ class AudioPlayer: ObservableObject {
                 }
             }
         }
-        
-        // Step 6: Update the player state
-        self.player = newPlayer
-        self.currentSong = song
-        self.state = .loading  // Brief loading state before playback starts
-        self.duration = Double(song.duration) // Convert Int seconds to Double
-        self.currentTime = 0   // Start at the beginning
-        
-        // Step 7: Start playback!
-        newPlayer.play()
-        // Apply current playback speed
-        newPlayer.rate = Float(playbackRate)
-        self.state = .playing
-        
-        // Step 8: Update Control Center / lock screen
-        updateNowPlayingInfo()
-        // Track this song in recently played history
-        addToRecentlyPlayed(song)
     }
-    
+
     /// Handle when a song ends naturally (not skipped by the user).
     ///
     /// The behavior depends on the current repeat mode:
@@ -601,10 +623,19 @@ class AudioPlayer: ObservableObject {
         
         // Start the next song playing (silently for now)
         nextPlayer.play()
-        
+        // Apply the current playback speed, same as every other playback path
+        nextPlayer.rate = Float(playbackRate)
+
         // Save the old player for the crossfade
         guard let oldPlayer = self.player else {
-            // No old player — just switch to the new one
+            // No old player — just switch to the new one.
+            // BUG FIX: this branch used to skip attaching a time observer
+            // entirely, which meant currentTime would freeze and the song
+            // would never be detected as "ended" (no auto-advance to the
+            // next track) whenever crossfade fired with no previous player
+            // to fade out. attachTimeObserver(to:) below fixes that by
+            // wiring up the same observer every other path uses.
+            attachTimeObserver(to: nextPlayer)
             self.player = nextPlayer
             self.currentSong = nextSong
             self.state = .playing
@@ -614,26 +645,15 @@ class AudioPlayer: ObservableObject {
             addToRecentlyPlayed(nextSong)
             return
         }
-        
+
         // Store old observer token to remove it later
         let oldToken = timeObserverToken
-        
-        // Set up time observer for the new player
-        let interval = CMTime(seconds: 0.5, preferredTimescale: 600)
-        timeObserverToken = nextPlayer.addPeriodicTimeObserver(
-            forInterval: interval,
-            queue: .main
-        ) { [weak self] time in
-            Task { @MainActor in
-                guard let self = self else { return }
-                self.currentTime = time.seconds
-                self.updateNowPlayingInfo()
-                if time.seconds >= self.duration && self.duration > 0 {
-                    self.handleSongEnded()
-                }
-            }
-        }
-        
+
+        // Set up a time observer for the new player, using the same shared
+        // helper as every other playback path (see attachTimeObserver(to:)
+        // above playSong() for the full explanation).
+        attachTimeObserver(to: nextPlayer)
+
         // Update state to the new song
         self.player = nextPlayer
         self.currentSong = nextSong

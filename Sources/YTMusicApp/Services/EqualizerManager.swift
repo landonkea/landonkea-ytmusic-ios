@@ -27,6 +27,13 @@ import SwiftUI
 ///
 /// We provide presets (Flat, Bass Boost, etc.) that set all 10 bands at once
 /// for common listening scenarios.
+///
+/// WHAT IS "ObservableObject"?
+/// This is a protocol (a contract a type promises to follow) from SwiftUI's
+/// Combine-based data flow. Conforming to it means SwiftUI views can
+/// "subscribe" to this object and automatically redraw themselves whenever
+/// one of its `@Published` properties changes — we never have to manually
+/// tell the UI to refresh.
 class EqualizerManager: ObservableObject {
     
     // MARK: - Shared Instance
@@ -40,6 +47,12 @@ class EqualizerManager: ObservableObject {
     
     /// Whether the equalizer is enabled.
     /// When disabled, audio passes through unprocessed.
+    ///
+    /// WHAT IS "@Published"?
+    /// This property wrapper (a special annotation that adds behavior to a
+    /// stored property) automatically announces changes to this value to
+    /// anything observing this object (like a SwiftUI view). Whenever
+    /// `isEnabled` is set to a new value, every view reading it re-renders.
     @Published var isEnabled: Bool = false
     
     /// The name of the currently active preset.
