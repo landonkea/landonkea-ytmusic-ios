@@ -63,6 +63,14 @@ targets:
         # Generate a basic Info.plist automatically (Xcode fills in
         # the standard keys like bundle id, version, etc.).
         GENERATE_INFOPLIST_FILE: YES
+        # Merge fragment for custom (non-"well-known") Info.plist keys —
+        # see Sources/YTMusicApp/Resources/Info.plist for why this is
+        # needed: INFOPLIST_KEY_INNERTUBE_API_KEY alone silently gets
+        # dropped by GENERATE_INFOPLIST_FILE because Xcode only
+        # auto-injects INFOPLIST_KEY_* settings for keys it recognizes as
+        # standard. This makes Xcode MERGE the fragment's custom entries
+        # (like INNERTUBE_API_KEY) into the generated plist instead.
+        INFOPLIST_FILE: Sources/YTMusicApp/Resources/Info.plist
         # The app uses SwiftUI @main — no storyboard needed.
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         # Portrait + landscape orientations both supported.
@@ -74,12 +82,6 @@ targets:
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Voice search lets you search for songs, artists, and albums by speaking instead of typing."
         # Voice search records audio through the microphone — required usage string.
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Voice search needs microphone access to hear your spoken search."
-        # Injects the INNERTUBE_API_KEY build setting (from
-        # Config/Secrets.xcconfig) into the generated Info.plist under the
-        # key "INNERTUBE_API_KEY". InnerTubeClient.swift reads it at runtime
-        # via Bundle.main — this is how the key gets from the gitignored
-        # xcconfig into the compiled app without ever being hardcoded.
-        INFOPLIST_KEY_INNERTUBE_API_KEY: $(INNERTUBE_API_KEY)
         # Only build for the device architectures Xcode runs on.
         ONLY_ACTIVE_ARCH: YES
         # Signing for the simulator — no team needed for local builds.
@@ -87,13 +89,34 @@ targets:
         # SwiftUI lifecycle with a modern deployment target.
         SWIFT_VERSION: "5.0"
 
+  # ── YTMusicAppTests — unit tests, runs on the simulator ────────
+  # Exercises real runtime behavior (not just compilation), e.g. the
+  # EqualizerEngine attach()-before-connect() crash fix: a test builds
+  # a real AVAudioEngine graph through EqualizerEngine.playFile() and
+  # asserts it doesn't throw/crash.
+  YTMusicAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/YTMusicAppTests
+    dependencies:
+      - target: YTMusicApp
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+
 # "schemes:" defines the build/run scheme used by Xcode's toolbar.
 schemes:
   YTMusicApp:
     build:
       targets:
         YTMusicApp: all
+        YTMusicAppTests: [test]
     run:
       config: Debug
     test:
       config: Debug
+      targets:
+        - YTMusicAppTests

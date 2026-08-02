@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	This is a MERGE FRAGMENT, not the full Info.plist.
+	GENERATE_INFOPLIST_FILE is YES for the YTMusicApp target, which
+	synthesizes the bulk of Info.plist from INFOPLIST_KEY_* build
+	settings (see project.yml). Xcode only auto-injects INFOPLIST_KEY_*
+	settings for Info.plist keys it recognizes as "well-known"
+	(CFBundleDisplayName, NSMicrophoneUsageDescription, etc) — a fully
+	custom, app-specific key like INNERTUBE_API_KEY is silently dropped
+	by that mechanism (confirmed: the build succeeds but the key never
+	lands in the compiled Info.plist, so Bundle.main lookups return nil
+	and InnerTubeClient's fatalError fires on every launch).
+
+	Setting INFOPLIST_FILE to point at this fragment (while keeping
+	GENERATE_INFOPLIST_FILE: YES) tells Xcode to MERGE this file's
+	entries into the generated plist. Xcode still expands the
+	$(INNERTUBE_API_KEY) build-setting reference (sourced from the
+	gitignored Config/Secrets.xcconfig) when it processes this file, so
+	the compiled Info.plist ends up with the real key.
+	-->
+	<key>INNERTUBE_API_KEY</key>
+	<string>$(INNERTUBE_API_KEY)</string>
+</dict>
+</plist>

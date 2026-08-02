@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Supply Secrets.xcconfig
+        # Config/Secrets.xcconfig is gitignored (see .gitignore) — every
+        # fresh checkout needs it or the xcodegen-driven build fails with
+        # a missing INNERTUBE_API_KEY build setting. The value baked into
+        # Config/Secrets.example.xcconfig (the committed template) is the
+        # public InnerTube WEB_REMIX client key that YouTube Music's own
+        # web client ships in its JavaScript, and that virtually every
+        # open-source YouTube/YouTube-Music client (yt-dlp, ytmusicapi,
+        # Metrolist, etc.) uses identically — a client-type identifier,
+        # not a private/billed credential, so it's safe to bake into CI.
+        run: |
+          cp Config/Secrets.example.xcconfig Config/Secrets.xcconfig
+          sed -i '' 's/YOUR_INNERTUBE_API_KEY_HERE/AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30/' Config/Secrets.xcconfig
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Select simulator destination
+        id: sim
+        # Pick whatever iPhone simulator the runner's Xcode actually has
+        # installed, rather than hardcoding a device name (e.g. "iPhone
+        # 16") that may not exist on a given macos-latest image/Xcode
+        # version. Falls back to "iPhone 16" if none is found.
+        run: |
+          NAME=$(xcrun simctl list devices available | grep -m1 -E "iPhone (1[4-9]|[2-9][0-9])" | sed -E 's/^[[:space:]]*([^(]+) \(.*/\1/' | sed -E 's/[[:space:]]+$//')
+          if [ -z "$NAME" ]; then
+            NAME="iPhone 16"
+          fi
+          echo "Selected simulator: $NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build (YTMusicApp, iOS Simulator)
+        run: |
+          xcodebuild \
+            -scheme YTMusicApp \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            build
+
+      - name: Test (YTMusicAppTests, iOS Simulator)
+        run: |
+          xcodebuild \
+            -scheme YTMusicApp \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            -only-testing:YTMusicAppTests \
+            test
