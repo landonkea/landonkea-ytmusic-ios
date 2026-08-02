@@ -86,8 +86,12 @@ class InnerTubeClient {
     // MARK: - Initialization
     
     /// Create a new InnerTube client
-    /// - Parameter session: URL session to use (for testing, you can pass a mock)
-    init(session: URLSession = .shared) {
+    /// - Parameter session: URL session to use (for testing, you can pass a mock).
+    ///   Defaults to `NetworkCache.session` — a `URLSession` backed by a
+    ///   properly-sized disk+memory cache instead of the tiny 10MB default
+    ///   `URLSession.shared` normally uses. See NetworkCache.swift for what
+    ///   this does (and, importantly, doesn't) cache and why.
+    init(session: URLSession = NetworkCache.session) {
         self.session = session
     }
     

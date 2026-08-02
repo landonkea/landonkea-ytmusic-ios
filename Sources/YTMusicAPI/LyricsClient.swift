@@ -26,8 +26,13 @@ class LyricsClient {
     
     /// Create a new lyrics client.
     ///
-    /// - Parameter session: URL session to use (for testing, pass a mock)
-    init(session: URLSession = .shared) {
+    /// - Parameter session: URL session to use (for testing, pass a mock).
+    ///   Defaults to `NetworkCache.session` so repeated lyrics lookups for
+    ///   the same track/artist are served from disk instead of re-hitting
+    ///   lrclib.net — lyrics are GET requests and effectively immutable
+    ///   for a given track, unlike InnerTube's POST-only API responses.
+    ///   See NetworkCache.swift for details.
+    init(session: URLSession = NetworkCache.session) {
         self.session = session
     }
     
