@@ -619,6 +619,14 @@ class InnerTubeClient {
     /// timeout errors. These are usually temporary — retrying after a short
     /// wait usually succeeds. Client errors (400 Bad Request, 403 Forbidden)
     /// won't fix themselves, so we don't retry those.
+    ///
+    /// WHAT IS `block`?
+    /// `block: () async throws -> T` is a "closure" parameter — a closure is
+    /// a chunk of code (here, "the actual network request") that gets passed
+    /// around and called later, just like a value. Instead of writing the
+    /// retry loop separately for every kind of request, callers hand this
+    /// function a closure containing whatever work they want retried, and
+    /// `withRetry` calls it (`try await block()` below) as many times as needed.
     private func withRetry<T>(maxAttempts: Int, initialDelay: TimeInterval = 0.5, block: () async throws -> T) async throws -> T {
         var currentDelay = initialDelay
         var lastError: Error?

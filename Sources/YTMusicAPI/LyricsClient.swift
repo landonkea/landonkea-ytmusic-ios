@@ -153,63 +153,92 @@ struct LrclibResponse: Codable {
         )
     }
     
+    /// The regex pattern that matches one synced-lyrics line, e.g.
+    /// `"[00:25.29] I'm just a poor boy"`.
+    ///
+    /// Regex explanation (a "regular expression" is a mini pattern-matching
+    /// language for finding/extracting pieces of text):
+    /// \[        = literal opening bracket
+    /// (\d{2})   = 2 digits for minutes (captured — "captured" means this
+    ///             piece gets remembered so we can pull it out afterward)
+    /// :         = literal colon
+    /// (\d{2})   = 2 digits for seconds (captured)
+    /// \.(\d+)   = dot followed by digits for milliseconds (captured)
+    /// \]        = literal closing bracket
+    /// (.*)      = the rest of the line (the lyrics text, captured)
+    ///
+    /// This is declared once as a `static let` (shared by all instances,
+    /// computed only the first time it's needed) instead of being rebuilt
+    /// inside the per-line loop below — compiling a regex pattern has a
+    /// real cost, and re-doing it for every single lyric line would be
+    /// wasteful when the pattern never changes.
+    private static let syncedLinePattern = try? NSRegularExpression(
+        pattern: #"\[(\d{2}):(\d{2})\.(\d+)\](.*)"#
+    )
+
     /// Parse synced lyrics from the `[MM:SS.xx] line text` format.
     ///
-    /// Example input: `"[00:25.29] I'm just a poor boy"`
-    /// Output: `SyncedLine(time: 25.29, text: "I'm just a poor boy")`
+    /// Splits the raw multi-line string into individual lines, then hands
+    /// each one to `parseSyncedLine(_:)` to do the actual pattern matching.
+    /// Keeping the "loop over lines" logic separate from the "parse one
+    /// line" logic makes each function easier to read and test on its own.
     ///
-    /// Returns nil if parsing fails (e.g. if the format is unexpected).
+    /// Returns nil if no lines could be parsed (e.g. if the format is
+    /// completely unexpected).
     private func parseSyncedLyrics(_ text: String) -> [SyncedLine]? {
-        var lines: [SyncedLine] = []
-        
-        // Split by newlines and process each line
-        let rawLines = text.components(separatedBy: .newlines)
-        
-        for rawLine in rawLines {
-            let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty else { continue }
-            
-            // Match the timestamp pattern: [MM:SS.xx] or [MM:SS.xxx]
-            // Regex explanation:
-            // \\[        = literal opening bracket
-            // (\\d{2})   = 2 digits for minutes (captured)
-            // :          = literal colon
-            // (\\d{2})   = 2 digits for seconds (captured)
-            // \\.(\\d+)  = dot followed by digits for milliseconds (captured)
-            // \\]        = literal closing bracket
-            // (.*)       = the rest of the line (the lyrics text)
-            let pattern = #"\[(\d{2}):(\d{2})\.(\d+)\](.*)"#
-            
-            guard let regex = try? NSRegularExpression(pattern: pattern),
-                  let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) else {
-                continue
-            }
-            
-            // Extract captured groups
-            guard let minutesRange = Range(match.range(at: 1), in: trimmed),
-                  let secondsRange = Range(match.range(at: 2), in: trimmed),
-                  let msRange = Range(match.range(at: 3), in: trimmed),
-                  let textRange = Range(match.range(at: 4), in: trimmed) else {
-                continue
-            }
-            
-            // Convert to time in seconds
-            let minutes = Double(trimmed[minutesRange]) ?? 0
-            let seconds = Double(trimmed[secondsRange]) ?? 0
-            let milliseconds = Double(trimmed[msRange]) ?? 0
-            
-            // Calculate total seconds: minutes×60 + seconds + milliseconds/1000
-            let time = minutes * 60 + seconds + milliseconds / pow(10, Double(trimmed[msRange].count))
-            
-            let lineText = String(trimmed[textRange]).trimmingCharacters(in: .whitespaces)
-            
-            // Skip empty lines (instrumental breaks)
-            guard !lineText.isEmpty else { continue }
-            
-            lines.append(SyncedLine(time: time, text: lineText))
-        }
-        
+        // `compactMap` transforms each element and drops any nil results —
+        // exactly what we want here, since parseSyncedLine returns nil for
+        // lines that don't match the expected timestamp format.
+        let lines = text
+            .components(separatedBy: .newlines)
+            .compactMap { parseSyncedLine($0) }
+
         return lines.isEmpty ? nil : lines
+    }
+
+    /// Parse a single line of synced lyrics, e.g. `"[00:25.29] I'm just a poor boy"`.
+    ///
+    /// - Returns: A `SyncedLine` with the timestamp converted to seconds,
+    ///   or nil if this line doesn't match the expected format (blank line,
+    ///   header line, malformed timestamp, etc.).
+    private func parseSyncedLine(_ rawLine: String) -> SyncedLine? {
+        let trimmed = rawLine.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Run the shared regex against this one line. `NSRange(trimmed.startIndex..., in: trimmed)`
+        // converts Swift's native String range into the legacy NSString-style
+        // range that NSRegularExpression (an Objective-C-based API) expects.
+        guard let regex = Self.syncedLinePattern,
+              let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)) else {
+            return nil
+        }
+
+        // Pull out the 4 captured groups (minutes, seconds, milliseconds, text).
+        // `match.range(at:)` gives an NSRange; `Range(_:in:)` converts that
+        // back into a Swift String range so we can subscript `trimmed` with it.
+        guard let minutesRange = Range(match.range(at: 1), in: trimmed),
+              let secondsRange = Range(match.range(at: 2), in: trimmed),
+              let msRange = Range(match.range(at: 3), in: trimmed),
+              let textRange = Range(match.range(at: 4), in: trimmed) else {
+            return nil
+        }
+
+        let minutes = Double(trimmed[minutesRange]) ?? 0
+        let seconds = Double(trimmed[secondsRange]) ?? 0
+        let milliseconds = Double(trimmed[msRange]) ?? 0
+
+        // Calculate total seconds: minutes×60 + seconds + milliseconds/1000.
+        // The milliseconds group can be 2 or 3 digits (".29" vs ".290"), so
+        // we divide by 10^(digit count) rather than a fixed 1000 to scale
+        // it correctly either way.
+        let time = minutes * 60 + seconds + milliseconds / pow(10, Double(trimmed[msRange].count))
+
+        let lineText = String(trimmed[textRange]).trimmingCharacters(in: .whitespaces)
+
+        // Skip empty lines (instrumental breaks have a timestamp but no text)
+        guard !lineText.isEmpty else { return nil }
+
+        return SyncedLine(time: time, text: lineText)
     }
 }
 

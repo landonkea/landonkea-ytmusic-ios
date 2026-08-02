@@ -137,7 +137,7 @@ enum PlayerState {
 /// objects with the same video ID are considered equal, even if other fields
 /// differ. This is useful for finding songs in the queue by ID.
 ///
-/// CODEPABLE CONFORMANCE:
+/// CODABLE CONFORMANCE:
 /// We also conform to Codable so a Playlist (which stores [NowPlaying]) can
 /// be saved to / loaded from JSON on disk.
 ///
