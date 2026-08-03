@@ -42,10 +42,42 @@ class StatsManager: ObservableObject {
         let artist: String
         let durationPlayed: Double  // seconds actually listened
         let timestamp: Date
+        // Whether this session ended because the user skipped away rather
+        // than the song finishing naturally. `= false` default means old,
+        // already-saved sessions (recorded before this field existed) decode
+        // fine without needing a migration — `Codable`'s synthesized decoder
+        // treats a defaulted `var`/`let` as optional-if-missing as long as we
+        // give it an explicit `init(from:)` below, since a plain default
+        // value doesn't apply to JSON decoding automatically.
+        let wasSkipped: Bool
+
+        init(id: UUID, videoId: String, title: String, artist: String, durationPlayed: Double, timestamp: Date, wasSkipped: Bool = false) {
+            self.id = id
+            self.videoId = videoId
+            self.title = title
+            self.artist = artist
+            self.durationPlayed = durationPlayed
+            self.timestamp = timestamp
+            self.wasSkipped = wasSkipped
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(UUID.self, forKey: .id)
+            videoId = try container.decode(String.self, forKey: .videoId)
+            title = try container.decode(String.self, forKey: .title)
+            artist = try container.decode(String.self, forKey: .artist)
+            durationPlayed = try container.decode(Double.self, forKey: .durationPlayed)
+            timestamp = try container.decode(Date.self, forKey: .timestamp)
+            // Sessions saved before skip-tracking existed simply won't have
+            // this key — default to `false` (treat old data as "completed")
+            // rather than failing to decode the whole history file.
+            wasSkipped = try container.decodeIfPresent(Bool.self, forKey: .wasSkipped) ?? false
+        }
     }
-    
+
     // MARK: - Published Properties
-    
+
     /// All recorded listen sessions (limited to last 500).
     @Published private(set) var sessions: [ListenSession] = []
     
@@ -68,6 +100,17 @@ class StatsManager: ObservableObject {
     var averageListenTime: TimeInterval {
         guard !sessions.isEmpty else { return 0 }
         return totalTimeListened / Double(sessions.count)
+    }
+
+    /// Total number of sessions that ended in a skip rather than a natural finish.
+    var totalSkips: Int {
+        sessions.filter { $0.wasSkipped }.count
+    }
+
+    /// Fraction (0.0–1.0) of all recorded sessions that were skips.
+    var skipRate: Double {
+        guard !sessions.isEmpty else { return 0 }
+        return Double(totalSkips) / Double(sessions.count)
     }
     
     /// Get the top N most played songs.
@@ -124,6 +167,94 @@ class StatsManager: ObservableObject {
             .map { (artist: $0.key, count: $0.value) }
     }
     
+    // MARK: - Skip Signal (item #4: skip-tracking as a first-class signal)
+
+    /// How many times this song's sessions ended in a skip (as opposed to
+    /// playing through naturally).
+    func skipCount(for videoId: String) -> Int {
+        sessions.filter { $0.videoId == videoId && $0.wasSkipped }.count
+    }
+
+    /// Whether a song is skipped often enough that recommendation logic
+    /// should down-weight or exclude it.
+    ///
+    /// HEURISTIC: needs at least 3 sessions to have an opinion (so one bad
+    /// mood/one accidental skip doesn't blacklist a song), and skips at
+    /// least 60% of the time it's played.
+    func isFrequentlySkipped(videoId: String) -> Bool {
+        let songSessions = sessions.filter { $0.videoId == videoId }
+        guard songSessions.count >= 3 else { return false }
+        let skipped = songSessions.filter { $0.wasSkipped }.count
+        return Double(skipped) / Double(songSessions.count) >= 0.6
+    }
+
+    // MARK: - "On Repeat" / "Recently Discovered" (item #2)
+    //
+    // Both are different slices of the same `sessions` substrate as
+    // `mostPlayedSongs`/`topArtists` above — no new data collection needed,
+    // just a different lens on it. This is the "cheap to build once #3 is
+    // done" payoff mentioned in the original research: because sessions now
+    // include skipped plays too, these slices reflect genuine listening
+    // behavior rather than only naturally-completed plays.
+
+    /// Songs in "heavy rotation" recently — played (and NOT mostly skipped)
+    /// several times within the last `withinDays` days.
+    ///
+    /// This is distinct from `mostPlayedSongs`, which is all-time and
+    /// doesn't care about recency — a song played 40 times two years ago
+    /// but never since would top `mostPlayedSongs` forever. `onRepeatSongs`
+    /// only looks at recent behavior, so it reflects what's on repeat *now*.
+    func onRepeatSongs(limit: Int = 20, withinDays: Int = 21, minPlays: Int = 3) -> [(videoId: String, title: String, artist: String, count: Int)] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -withinDays, to: Date()) ?? .distantPast
+        let recent = sessions.filter { $0.timestamp >= cutoff && !$0.wasSkipped }
+
+        var counts: [String: (title: String, artist: String, count: Int)] = [:]
+        for session in recent {
+            if var entry = counts[session.videoId] {
+                entry.count += 1
+                counts[session.videoId] = entry
+            } else {
+                counts[session.videoId] = (session.title, session.artist, 1)
+            }
+        }
+
+        return counts
+            .filter { $0.value.count >= minPlays }
+            .sorted { $0.value.count > $1.value.count }
+            .prefix(limit)
+            .map { (videoId: $0.key, title: $0.value.title, artist: $0.value.artist, count: $0.value.count) }
+    }
+
+    /// Songs the user started listening to for the first time recently —
+    /// i.e. their earliest recorded session falls within `withinDays` days.
+    ///
+    /// Sorted newest-discovery-first. Songs the user has since skipped every
+    /// time are excluded — a song someone tried once and bailed on isn't a
+    /// "discovery" worth resurfacing.
+    func recentlyDiscoveredSongs(limit: Int = 20, withinDays: Int = 14) -> [(videoId: String, title: String, artist: String, firstPlayed: Date)] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -withinDays, to: Date()) ?? .distantPast
+
+        // Earliest session per videoId (sessions are appended in
+        // chronological order, so the first match walking forward is the
+        // earliest — but we sort defensively rather than relying on that).
+        var earliestByVideo: [String: ListenSession] = [:]
+        for session in sessions {
+            if let existing = earliestByVideo[session.videoId] {
+                if session.timestamp < existing.timestamp {
+                    earliestByVideo[session.videoId] = session
+                }
+            } else {
+                earliestByVideo[session.videoId] = session
+            }
+        }
+
+        return earliestByVideo.values
+            .filter { $0.timestamp >= cutoff && !isFrequentlySkipped(videoId: $0.videoId) }
+            .sorted { $0.timestamp > $1.timestamp }
+            .prefix(limit)
+            .map { (videoId: $0.videoId, title: $0.title, artist: $0.artist, firstPlayed: $0.timestamp) }
+    }
+
     /// Human-readable total listening time (e.g. "12h 34m").
     var formattedTotalTime: String {
         let totalSeconds = Int(totalTimeListened)
@@ -178,7 +309,15 @@ class StatsManager: ObservableObject {
 
     // MARK: - Notification Handler
 
-    /// Called when a song finishes playing naturally.
+    /// Called whenever a listen session ends — either the song finished
+    /// naturally OR the user skipped away from it partway through.
+    ///
+    /// RECONCILIATION NOTE: this used to only fire on natural completion, so
+    /// StatsManager never learned about songs the user skipped — silently
+    /// biasing "most played"/recommendation data toward whatever happened to
+    /// autoplay to the end. AudioPlayer now reports every session exactly
+    /// once (see `finalizeCurrentSession` there), skipped or not, with the
+    /// real elapsed listening time.
     @objc private func songDidFinish(_ notification: Notification) {
         // Notifications carry an optional, untyped `userInfo` dictionary —
         // the poster (AudioPlayer) packs values into it as `[String: Any]`,
@@ -193,27 +332,33 @@ class StatsManager: ObservableObject {
               let durationPlayed = userInfo["durationPlayed"] as? Double else {
             return
         }
+        let wasSkipped = userInfo["wasSkipped"] as? Bool ?? false
 
-        recordPlay(videoId: videoId, title: title, artist: artist, durationPlayed: durationPlayed)
+        recordPlay(videoId: videoId, title: title, artist: artist, durationPlayed: durationPlayed, wasSkipped: wasSkipped)
     }
-    
+
     // MARK: - Recording
-    
+
     /// Record a listen session.
     ///
-    /// Only records if the song was played for at least 10 seconds (filters out accidental taps).
-    func recordPlay(videoId: String, title: String, artist: String, durationPlayed: Double) {
+    /// Only records if the song was played for at least 10 seconds (filters
+    /// out accidental taps) — this threshold now also applies to skips, so a
+    /// song tapped and immediately skipped after 2 seconds still isn't
+    /// counted as a "listen" (though it's still visible via `.songWasSkipped`
+    /// to any future skip-specific consumer that wants finer granularity).
+    func recordPlay(videoId: String, title: String, artist: String, durationPlayed: Double, wasSkipped: Bool = false) {
         guard durationPlayed >= 10 else { return }
-        
+
         let session = ListenSession(
             id: UUID(),
             videoId: videoId,
             title: title,
             artist: artist,
             durationPlayed: durationPlayed,
-            timestamp: Date()
+            timestamp: Date(),
+            wasSkipped: wasSkipped
         )
-        
+
         sessions.append(session)
         trimToMaxSessions()
         save()

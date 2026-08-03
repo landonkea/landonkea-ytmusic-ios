@@ -92,7 +92,23 @@ class AudioPlayer: ObservableObject {
         // Slice from currentIndex+1 to end, convert to Array
         return Array(queue[(currentIndex + 1)...])
     }
-    
+
+    /// Computed property: songs that came before the current song, in the
+    /// order they'll be re-played if you step backward through them (most
+    /// recently played first — i.e. reversed from queue order).
+    ///
+    /// This is the queue-position counterpart to `recentlyPlayed` (which
+    /// tracks a separate, longer-lived history across the whole app rather
+    /// than "what's behind me in THIS queue"). Used by QueueView's History
+    /// section so users can see and jump back to songs they've already
+    /// passed in the current queue.
+    var history: [NowPlaying] {
+        guard currentIndex > 0 && currentIndex <= queue.count else {
+            return []
+        }
+        return Array(queue[0..<currentIndex]).reversed()
+    }
+
     // MARK: - Private Properties (internal state)
     
     /// The AVPlayer that does the actual audio playback.
@@ -112,6 +128,27 @@ class AudioPlayer: ObservableObject {
     /// If we don't remove it, it leaks memory.
     /// Type is `Any?` because Apple's API returns an opaque token.
     private var timeObserverToken: Any?
+
+    /// Whether the CURRENT song's listen session has already been reported
+    /// to StatsManager (via `.songDidFinishPlaying`).
+    ///
+    /// WHY THIS EXISTS (reconciling PlayCountManager vs. StatsManager):
+    /// Previously, StatsManager only ever learned about a song when it
+    /// played through to its natural end — skip to the next track after 5
+    /// seconds and StatsManager never heard about it at all, while
+    /// PlayCountManager (which increments on every play START) counted it
+    /// immediately. That gap meant StatsManager's "most played" data quietly
+    /// under-counted anything users bail on, which is exactly the wrong bias
+    /// for building recommendations from it.
+    ///
+    /// Now EVERY session — whether it ends naturally or gets skipped — is
+    /// reported exactly once via `finalizeCurrentSession(wasSkipped:)`, with
+    /// the ACTUAL elapsed listening time (`currentTime`, not the full song
+    /// duration). This flag just prevents double-reporting: the natural-end
+    /// path finalizes the session itself, then `stopPlayer()` runs right
+    /// after (to tear down the player for the next song) and must not
+    /// report the same session a second time as "skipped".
+    private var sessionFinalized = true
     
     /// The original queue order before shuffling.
     /// When shuffle is turned off, we restore this exact order.
@@ -352,6 +389,7 @@ class AudioPlayer: ObservableObject {
 
         self.player = newPlayer
         self.currentSong = song
+        self.sessionFinalized = false
         self.state = .loading
         // For local files, get duration from the player item if we don't know it
         if duration == 0 {
@@ -413,6 +451,7 @@ class AudioPlayer: ObservableObject {
         self.eqEngine = engine
         // Expose the song to the UI
         self.currentSong = song
+        self.sessionFinalized = false
         // Show a brief loading state while the engine spins up
         self.state = .loading
         
@@ -496,6 +535,7 @@ class AudioPlayer: ObservableObject {
         // Step 6: Update the player state
         self.player = newPlayer
         self.currentSong = song
+        self.sessionFinalized = false
         self.state = .loading  // Brief loading state before playback starts
         self.duration = Double(song.duration) // Convert Int seconds to Double
         self.currentTime = 0   // Start at the beginning
@@ -574,19 +614,10 @@ class AudioPlayer: ObservableObject {
                 // `self.duration > 0` = guard against duration being 0 (which would
                 // cause an immediate "song ended" on playback start)
                 if time.seconds >= self.duration && self.duration > 0 {
-                    // Record listening stats before handling song end
-                    if let currentSong = self.currentSong {
-                        NotificationCenter.default.post(
-                            name: .songDidFinishPlaying,
-                            object: nil,
-                            userInfo: [
-                                "videoId": currentSong.id,
-                                "title": currentSong.title,
-                                "artist": currentSong.artist,
-                                "durationPlayed": self.duration
-                            ]
-                        )
-                    }
+                    // Record listening stats before handling song end.
+                    // `wasSkipped: false` because we only reach this branch
+                    // when the song played all the way through naturally.
+                    self.finalizeCurrentSession(wasSkipped: false)
                     self.handleSongEnded()
                 }
             }
@@ -681,6 +712,7 @@ class AudioPlayer: ObservableObject {
             attachTimeObserver(to: nextPlayer)
             self.player = nextPlayer
             self.currentSong = nextSong
+            self.sessionFinalized = false
             self.state = .playing
             self.currentTime = 0
             self.duration = Double(nextSong.duration)
@@ -700,12 +732,13 @@ class AudioPlayer: ObservableObject {
         // Update state to the new song
         self.player = nextPlayer
         self.currentSong = nextSong
+        self.sessionFinalized = false
         self.state = .playing
         self.currentTime = 0
         self.duration = Double(nextSong.duration)
         updateNowPlayingInfo()
         addToRecentlyPlayed(nextSong)
-        
+
         // Perform the crossfade animation
         // Animate volume from 0→1 on new player, 1→0 on old player
         let fadeSteps = 50 // Number of animation steps (0.1s intervals over 5s)
@@ -786,11 +819,69 @@ class AudioPlayer: ObservableObject {
         updateNowPlayingInfo()
     }
     
+    /// Report the current song's listen session to StatsManager exactly once,
+    /// whether it ended naturally or is being cut short by a skip/stop.
+    ///
+    /// PART OF RECONCILING PlayCountManager vs. StatsManager: PlayCountManager
+    /// still counts every play START (used for the lightweight "Most Played"
+    /// badge on Home), but StatsManager now hears about the REAL outcome of
+    /// every session — how long the user actually listened, and whether they
+    /// bailed — which is the signal that matters for recommendations (see
+    /// StatsManager's `mostPlayedSongs`, `onRepeatSongs`, and `skipCounts`).
+    ///
+    /// - Parameter wasSkipped: `false` when the song reached its natural end;
+    ///   `true` when it's being interrupted (skip, stop, or switching to a
+    ///   different song before this one finished).
+    private func finalizeCurrentSession(wasSkipped: Bool) {
+        // Guard against double-reporting: the natural-end path calls this
+        // itself, and `stopPlayer()` (called right after, to tear down for
+        // the next song) must not report the same session again.
+        guard !sessionFinalized, let song = currentSong, currentTime > 0 else { return }
+        sessionFinalized = true
+
+        NotificationCenter.default.post(
+            name: .songDidFinishPlaying,
+            object: nil,
+            userInfo: [
+                "videoId": song.id,
+                "title": song.title,
+                "artist": song.artist,
+                // Actual elapsed listening time, NOT the full song duration —
+                // this is what makes skipped sessions honestly reported as
+                // "listened to 8 of 200 seconds" instead of not reported at all.
+                "durationPlayed": currentTime,
+                "wasSkipped": wasSkipped
+            ]
+        )
+
+        // Skip-tracking as its own first-class signal (separate from the
+        // general listen-session event above) so future recommendation
+        // logic can specifically down-weight songs users bail on, without
+        // having to re-derive "was this a skip" from the combined event.
+        if wasSkipped {
+            NotificationCenter.default.post(
+                name: .songWasSkipped,
+                object: nil,
+                userInfo: [
+                    "videoId": song.id,
+                    "title": song.title,
+                    "artist": song.artist,
+                    "afterSeconds": currentTime
+                ]
+            )
+        }
+    }
+
     /// Stop playback and clean up the AVPlayer.
     ///
     /// This is called internally before starting a new song.
     /// It removes the time observer, pauses the player, and resets state.
     private func stopPlayer() {
+        // If the outgoing song's session hasn't been reported yet (i.e. it
+        // didn't reach its natural end), report it now as a skip before we
+        // reset currentTime/duration below.
+        finalizeCurrentSession(wasSkipped: true)
+
         // Stop the equalizer engine too (if it's active)
         eqEngine?.stop()
         eqEngine = nil
@@ -987,8 +1078,26 @@ class AudioPlayer: ObservableObject {
         }
     }
     
+    /// Jump back to a song already played earlier in the current queue
+    /// (i.e. a song from `history`), without disturbing the rest of the
+    /// queue — everything between it and the current song simply becomes
+    /// "up next" again, the same way stepping backward one song at a time
+    /// via `playPrevious()` would, just in one hop.
+    ///
+    /// - Parameter index: The song's position in the FULL queue array (not
+    ///   the reversed `history` slice — callers map from a history-relative
+    ///   index the same way QueueView already maps `upNext`-relative
+    ///   indices back to the full queue).
+    func playFromHistory(at index: Int) {
+        guard index >= 0 && index < currentIndex else { return }
+        currentIndex = index
+        Task {
+            await playSong(queue[currentIndex])
+        }
+    }
+
     // MARK: - Queue Management
-    
+
     /// Add a song to the end of the queue and start playing it immediately.
     func addToQueueAndPlay(_ song: NowPlaying) {
         queue.append(song)
@@ -1642,7 +1751,18 @@ class AudioPlayer: ObservableObject {
 
 /// Custom notification names used throughout the app for decoupled communication.
 extension Notification.Name {
-    /// Posted when a song finishes playing naturally (reaches its end).
-    /// UserInfo keys: "videoId" (String), "title" (String), "artist" (String), "durationPlayed" (Double).
+    /// Posted whenever a listen session ends — either the song reached its
+    /// natural end OR it was skipped/interrupted partway through.
+    /// UserInfo keys: "videoId" (String), "title" (String), "artist" (String),
+    /// "durationPlayed" (Double — actual elapsed seconds listened),
+    /// "wasSkipped" (Bool).
     static let songDidFinishPlaying = Notification.Name("songDidFinishPlaying")
+
+    /// Posted specifically when a session ends via skip/interruption (a
+    /// subset of the sessions covered by `.songDidFinishPlaying`). Kept as
+    /// its own event so skip-tracking consumers don't need to filter the
+    /// combined event by `wasSkipped`.
+    /// UserInfo keys: "videoId" (String), "title" (String), "artist" (String),
+    /// "afterSeconds" (Double — how long the user listened before bailing).
+    static let songWasSkipped = Notification.Name("songWasSkipped")
 }

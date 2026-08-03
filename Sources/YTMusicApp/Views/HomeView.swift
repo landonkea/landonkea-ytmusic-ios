@@ -26,6 +26,17 @@ struct HomeView: View {
     /// The play count manager — provides most played song data.
     @EnvironmentObject var playCountManager: PlayCountManager
 
+    /// The stats manager — provides listening-history signal for the
+    /// "Made For You", "On Repeat", and "Recently Discovered" sections.
+    @EnvironmentObject var statsManager: StatsManager
+
+    /// The auto-generated "Made For You" mix. Loaded once via `.task` below
+    /// (it involves network calls to fetch related songs), then kept in
+    /// local state — unlike `homeSections`/`chartsSections` it isn't owned
+    /// by `apiClient` because it's derived from local listening data plus
+    /// the API, not a browse endpoint by itself.
+    @State private var madeForYouMix: [SearchResult] = []
+
     var body: some View {
         // NavigationView adds a navigation bar with the title
         NavigationView {
@@ -63,6 +74,13 @@ struct HomeView: View {
                     await homeLoad
                     await chartsLoad
                 }
+                // "Made For You" needs a handful of related-songs network
+                // calls (see MadeForYouEngine), so it's kept separate from
+                // the home/charts load above and only (re)built once per
+                // appearance — not on every re-render.
+                if madeForYouMix.isEmpty {
+                    madeForYouMix = await MadeForYouEngine.build(stats: statsManager, apiClient: apiClient)
+                }
             }
             // .refreshable enables pull-to-refresh (pull down from top).
             // This calls our closure when the user releases the pull.
@@ -73,6 +91,7 @@ struct HomeView: View {
                 async let chartsLoad: () = apiClient.loadCharts()
                 await homeLoad
                 await chartsLoad
+                madeForYouMix = await MadeForYouEngine.build(stats: statsManager, apiClient: apiClient)
             }
         }
     }
@@ -136,6 +155,31 @@ struct HomeView: View {
                 MostPlayedSection(songs: mostPlayed)
             }
 
+            // ── ON REPEAT SECTION ────────────────────────
+            // Songs in heavy rotation over the last few weeks (not all-time,
+            // like Most Played above — see StatsManager.onRepeatSongs).
+            let onRepeat = getOnRepeatSongs()
+            if !onRepeat.isEmpty {
+                OnRepeatSection(songs: onRepeat)
+            }
+
+            // ── RECENTLY DISCOVERED SECTION ──────────────
+            // Songs the user started listening to for the first time in the
+            // last couple weeks (and hasn't skipped away from every time).
+            let discovered = getRecentlyDiscoveredSongs()
+            if !discovered.isEmpty {
+                RecentlyDiscoveredSection(songs: discovered)
+            }
+
+            // ── MADE FOR YOU SECTION ─────────────────────
+            // Auto-generated mix blending the user's top artists with
+            // YouTube's related-songs graph (see MadeForYouEngine). Unlike
+            // the sections above, these are songs the user hasn't
+            // necessarily played before.
+            if !madeForYouMix.isEmpty {
+                MadeForYouSection(results: madeForYouMix)
+            }
+
             // ── TRENDING CHARTS SECTION ───────────────────
             // Shows top songs and trending content from YouTube Music.
             // Loaded separately from the home feed.
@@ -178,6 +222,33 @@ struct HomeView: View {
             }
         }
 
+        return result
+    }
+
+    // MARK: - On Repeat / Recently Discovered Helpers
+
+    /// Cross-references StatsManager's `onRepeatSongs()` (videoId + count)
+    /// with `recentlyPlayed` to get full song metadata, the same pattern as
+    /// `getMostPlayedSongs()` above.
+    private func getOnRepeatSongs() -> [(song: NowPlaying, playCount: Int)] {
+        var result: [(song: NowPlaying, playCount: Int)] = []
+        for item in statsManager.onRepeatSongs(limit: 10) {
+            if let song = audioPlayer.recentlyPlayed.first(where: { $0.id == item.videoId }) {
+                result.append((song: song, playCount: item.count))
+            }
+        }
+        return result
+    }
+
+    /// Cross-references StatsManager's `recentlyDiscoveredSongs()` with
+    /// `recentlyPlayed` for full metadata.
+    private func getRecentlyDiscoveredSongs() -> [NowPlaying] {
+        var result: [NowPlaying] = []
+        for item in statsManager.recentlyDiscoveredSongs(limit: 10) {
+            if let song = audioPlayer.recentlyPlayed.first(where: { $0.id == item.videoId }) {
+                result.append(song)
+            }
+        }
         return result
     }
 }
@@ -587,6 +658,154 @@ private struct MostPlayedCard: View {
     }
 }
 
+// MARK: - On Repeat Section
+
+/// A horizontal carousel showing songs in heavy rotation over the last few
+/// weeks (as opposed to `MostPlayedSection`, which is all-time).
+struct OnRepeatSection: View {
+    let songs: [(song: NowPlaying, playCount: Int)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "repeat.circle.fill")
+                    .foregroundColor(.purple)
+                Text("On Repeat")
+                    .font(.title2)
+                    .fontWeight(.bold)
+            }
+            .padding(.horizontal)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(Array(songs.enumerated()), id: \.element.song.id) { _, item in
+                        MostPlayedCard(song: item.song, playCount: item.playCount)
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+}
+
+// MARK: - Recently Discovered Section
+
+/// A horizontal carousel showing songs the user started listening to for
+/// the first time in the last couple weeks.
+struct RecentlyDiscoveredSection: View {
+    @EnvironmentObject var audioPlayer: AudioPlayer
+    let songs: [NowPlaying]
+
+    @State private var selectedSong: NowPlaying?
+    @State private var showSongInfo = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "sparkles")
+                    .foregroundColor(.yellow)
+                Text("Recently Discovered")
+                    .font(.title2)
+                    .fontWeight(.bold)
+            }
+            .padding(.horizontal)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(songs) { song in
+                        RecentlyPlayedCard(
+                            song: song,
+                            onTap: { audioPlayer.addToQueueAndPlay(song) },
+                            onShowInfo: {
+                                selectedSong = song
+                                showSongInfo = true
+                            }
+                        )
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+        .sheet(isPresented: $showSongInfo) {
+            if let song = selectedSong {
+                NavigationView {
+                    SongDetailView(
+                        videoId: song.id,
+                        title: song.title,
+                        artist: song.artist,
+                        thumbnailUrl: song.thumbnailUrl,
+                        duration: "\(song.duration)"
+                    )
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Made For You Section
+
+/// A horizontal carousel showing the auto-generated "Made For You" mix (see
+/// MadeForYouEngine). Unlike the sections above, these are `SearchResult`s
+/// (metadata only, no streaming URL yet) rather than `NowPlaying` — the
+/// streaming URL is resolved on tap, same as every other browse card.
+struct MadeForYouSection: View {
+    @EnvironmentObject var audioPlayer: AudioPlayer
+    @EnvironmentObject var apiClient: APIClient
+    let results: [SearchResult]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "wand.and.stars")
+                    .foregroundColor(.pink)
+                Text("Made For You")
+                    .font(.title2)
+                    .fontWeight(.bold)
+            }
+            .padding(.horizontal)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(results) { result in
+                        ItemCard(item: BrowseItem(
+                            id: result.id,
+                            title: result.title,
+                            subtitle: result.artist,
+                            thumbnailUrl: result.thumbnailUrl,
+                            type: .song
+                        ))
+                        .onTapGesture {
+                            playSearchResult(result)
+                        }
+                    }
+                }
+                .padding(.horizontal)
+            }
+        }
+    }
+
+    /// Resolve the streaming URL and play — same 2-step flow as
+    /// `SectionView.playItem(_:)`: browse/related results only include
+    /// metadata, not the (short-lived) audio URL.
+    private func playSearchResult(_ result: SearchResult) {
+        Task {
+            do {
+                let playerInfo = try await apiClient.getPlayerInfo(videoId: result.id)
+                await audioPlayer.play(
+                    videoId: playerInfo.videoId,
+                    title: playerInfo.title,
+                    artist: playerInfo.artist,
+                    thumbnailUrl: playerInfo.thumbnailUrl,
+                    audioUrl: playerInfo.audioUrl,
+                    duration: playerInfo.duration
+                )
+            } catch {
+                print("Failed to play Made For You item: \(error)")
+            }
+        }
+    }
+}
+
 // MARK: - Preview
 
 #Preview {
@@ -594,4 +813,5 @@ private struct MostPlayedCard: View {
         .environmentObject(AudioPlayer())
         .environmentObject(APIClient())
         .environmentObject(PlayCountManager())
+        .environmentObject(StatsManager())
 }

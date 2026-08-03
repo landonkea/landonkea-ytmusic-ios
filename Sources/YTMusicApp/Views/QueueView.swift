@@ -41,6 +41,7 @@ struct QueueView: View {
         NavigationView {
             // List = scrollable table view (like UITableView in UIKit)
             List {
+                historySection
                 nowPlayingSection
                 upNextOrEmptySection
             }
@@ -102,6 +103,61 @@ struct QueueView: View {
 
     // MARK: - Sections
     // "MARK:" comments are bookmarks for Xcode's navigator/minimap and don't affect behavior.
+
+    /// SECTION 0: HISTORY — songs already played earlier in this queue.
+    /// Tapping one jumps straight back to it (via `AudioPlayer.playFromHistory`)
+    /// without disturbing the rest of the queue; everything after it just
+    /// becomes "up next" again, same as stepping back one at a time would.
+    ///
+    /// Shown ABOVE "Now Playing" so the section order reads top-to-bottom as
+    /// a timeline: past → present → future.
+    @ViewBuilder
+    private var historySection: some View {
+        if !audioPlayer.history.isEmpty {
+            Section {
+                // `audioPlayer.history` is already reversed (most recently
+                // played first). Its element at local index `i` sits at full
+                // queue index `currentIndex - 1 - i` — see the index math
+                // note on `upNextOrEmptySection` for the general pattern;
+                // this is the mirror-image version since history counts
+                // backward from currentIndex instead of forward.
+                ForEach(Array(audioPlayer.history.enumerated()), id: \.element.id) { index, song in
+                    historyRow(song: song)
+                        .contentShape(Rectangle()) // Makes the whole row tappable, not just the text/image
+                        .onTapGesture {
+                            playHistoryItem(atLocalIndex: index)
+                        }
+                }
+            } header: {
+                Text("History")
+            }
+        }
+    }
+
+    /// A single row in the History list: artwork, title, artist, and a
+    /// "replay" icon hinting that tapping jumps back to this song.
+    private func historyRow(song: NowPlaying) -> some View {
+        HStack(spacing: 12) {
+            queueThumbnail(url: song.thumbnailUrl, size: 48, cornerRadius: 6)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(song.title)
+                    .font(.subheadline)
+                    .lineLimit(1)
+
+                Text(song.artist)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .foregroundColor(.secondary) // Dim past songs slightly vs. up-next rows
+
+            Spacer()
+
+            Image(systemName: "arrow.counterclockwise.circle")
+                .foregroundColor(.secondary)
+        }
+    }
 
     /// SECTION 1: NOW PLAYING.
     /// `@ViewBuilder` lets this computed property conditionally return either the section
@@ -306,6 +362,18 @@ struct QueueView: View {
     }
 
     // MARK: - Helpers
+
+    /// Jumps back to a song in the History list, converting its local
+    /// (history-relative, most-recent-first) index into the full queue's
+    /// index before calling into the player.
+    /// - Parameter localIndex: The song's position within the `history` slice (0-based, index 0 = most recently played).
+    private func playHistoryItem(atLocalIndex localIndex: Int) {
+        // `history` is `queue[0..<currentIndex]` reversed, so local index 0
+        // (most recent) maps to full queue index `currentIndex - 1`, local
+        // index 1 maps to `currentIndex - 2`, etc.
+        let globalIndex = audioPlayer.currentIndex - 1 - localIndex
+        audioPlayer.playFromHistory(at: globalIndex)
+    }
 
     /// Removes a song from the "up next" list, converting its local (upNext-relative)
     /// index into the full queue's index before calling into the player.
