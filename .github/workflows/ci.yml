@@ -31,36 +31,17 @@ jobs:
           cp Config/Secrets.example.xcconfig Config/Secrets.xcconfig
           sed -i '' 's/YOUR_INNERTUBE_API_KEY_HERE/AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30/' Config/Secrets.xcconfig
 
-      - name: Generate Xcode project
-        run: xcodegen generate
+      - name: Run tests
+        # Generates the Xcode project, picks whatever iPhone simulator the
+        # runner's Xcode actually has installed, runs the full test suite,
+        # and writes a persisted summary to test-results/latest.md (see
+        # scripts/run_tests.sh).
+        run: scripts/run_tests.sh
 
-      - name: Select simulator destination
-        id: sim
-        # Pick whatever iPhone simulator the runner's Xcode actually has
-        # installed, rather than hardcoding a device name (e.g. "iPhone
-        # 16") that may not exist on a given macos-latest image/Xcode
-        # version. Falls back to "iPhone 16" if none is found.
-        run: |
-          NAME=$(xcrun simctl list devices available | grep -m1 -E "iPhone (1[4-9]|[2-9][0-9])" | sed -E 's/^[[:space:]]*([^(]+) \(.*/\1/' | sed -E 's/[[:space:]]+$//')
-          if [ -z "$NAME" ]; then
-            NAME="iPhone 16"
-          fi
-          echo "Selected simulator: $NAME"
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-
-      - name: Build (YTMusicApp, iOS Simulator)
-        run: |
-          xcodebuild \
-            -scheme YTMusicApp \
-            -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
-            build
-
-      - name: Test (YTMusicAppTests, iOS Simulator)
-        run: |
-          xcodebuild \
-            -scheme YTMusicApp \
-            -sdk iphonesimulator \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
-            -only-testing:YTMusicAppTests \
-            test
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+          if-no-files-found: warn

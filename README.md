@@ -66,6 +66,19 @@ Sources/
         └── PlayerView.swift     # Full-screen player
 ```
 
+## Running Tests
+
+```
+scripts/run_tests.sh
+```
+
+This runs `xcodegen generate` followed by `xcodebuild test` against the
+first available iPhone simulator, then writes a summary report to
+`test-results/latest.md` (pass/fail counts, timestamp, and any failures).
+The full raw `xcodebuild` log is saved alongside it at
+`test-results/raw.log`. Both are gitignored — generated locally and, in CI,
+uploaded as a workflow artifact (see `.github/workflows/ci.yml`).
+
 ## What's Next
 
 - [ ] Playlist support
