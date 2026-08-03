@@ -56,6 +56,10 @@ targets:
       - sdk: Speech.framework
       # UIKit — used alongside SwiftUI for some components.
       - sdk: UIKit.framework
+      # Network — NWPathMonitor, used by OfflineManager to detect Wi-Fi
+      # vs. cellular so the "Wi-Fi Only" downloads setting is actually
+      # enforced instead of just cosmetic.
+      - sdk: Network.framework
     settings:
       base:
         # The unique bundle identifier for the app.

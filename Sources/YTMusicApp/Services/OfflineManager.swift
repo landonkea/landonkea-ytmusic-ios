@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import BackgroundTasks  // BGTaskScheduler for requesting background time
+import Network          // NWPathMonitor — used to enforce "Wi-Fi Only" downloads
 
 /// Manages offline song caching — downloading, storing, and playing cached songs.
 ///
@@ -35,8 +36,23 @@ class OfflineManager: NSObject, ObservableObject {
     
     /// Currently downloading songs (video ID → progress 0.0-1.0)
     @Published var downloading: [String: Double] = [:]
-    
+
+    /// Whether the device currently has a Wi-Fi (or wired) connection.
+    /// Updated by `pathMonitor` below. `download()` checks this — together
+    /// with the "Wi-Fi Only" setting — before starting any transfer.
+    @Published private(set) var isOnWifi: Bool = true
+
+    /// Set whenever a download is skipped because "Wi-Fi Only" is enabled
+    /// in Settings and the device isn't on Wi-Fi. Views observe this
+    /// (see ContentView) to surface an alert; it's cleared after being shown.
+    @Published var wifiOnlyBlockedMessage: String?
+
     // MARK: - Private Properties
+
+    /// Watches the device's current network path (Wi-Fi vs. cellular vs.
+    /// none) so we can enforce the "Wi-Fi Only" downloads setting in real
+    /// time, instead of only checking once at app launch.
+    private let pathMonitor = NWPathMonitor()
     
     /// The app's Documents directory (persists between launches)
     private let documentsPath: URL
@@ -106,6 +122,29 @@ class OfflineManager: NSObject, ObservableObject {
         prepareDownloadsDirectory()
         loadIndex()
         session = Self.makeBackgroundSession(delegate: self)
+        startPathMonitor()
+    }
+
+    /// Start watching the device's network path so `isOnWifi` always
+    /// reflects the current connection type.
+    ///
+    /// `NWPathMonitor`'s `pathUpdateHandler` fires on whatever queue we hand
+    /// it (never the main thread by default), so — same as the
+    /// URLSessionDownloadDelegate methods below — we hop to the main actor
+    /// before touching the `@Published` property.
+    private func startPathMonitor() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            // `.wifi` covers actual Wi-Fi; `.wiredEthernet` covers a wired
+            // adapter (common on iPad) — both are effectively "unmetered",
+            // which is what a "Wi-Fi Only" setting is really asking about.
+            // Cellular (including a cellular personal hotspot) reports
+            // neither, so `isOnWifi` correctly becomes false for it.
+            let onWifi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)
+            Task { @MainActor [weak self] in
+                self?.isOnWifi = onWifi
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "com.landonkea.ytmusic.pathmonitor"))
     }
 
     /// Create the Downloads subdirectory on disk if it doesn't already exist.
@@ -203,6 +242,24 @@ class OfflineManager: NSObject, ObservableObject {
         guard !isDownloaded(videoId), !isDownloading(videoId) else { return }
 
         guard let url = URL(string: audioUrl) else { return }
+
+        // BUG FIX: enforce the "Wi-Fi Only" setting (SettingsView's
+        // `downloadOverWifiOnly` toggle). Previously this setting was
+        // stored but never read anywhere — downloads always went ahead
+        // over cellular regardless of the toggle. We now check the current
+        // network path before starting.
+        //
+        // We read the raw UserDefaults value with `object(forKey:)` rather
+        // than `bool(forKey:)`: `bool(forKey:)` returns `false` for a key
+        // that was never written, but SettingsView's `@AppStorage(...) =
+        // true` means the *intended* default is "on" — a user who never
+        // opens Settings should still get Wi-Fi-only protection by default,
+        // not silently download over cellular.
+        let wifiOnly = (UserDefaults.standard.object(forKey: "downloadOverWifiOnly") as? Bool) ?? true
+        if wifiOnly && !isOnWifi {
+            wifiOnlyBlockedMessage = "\"\(title)\" wasn't downloaded because Wi-Fi Only is enabled in Settings and you're not connected to Wi-Fi."
+            return
+        }
 
         // Start with 0% progress. Setting this before the `await` below is
         // what makes `isDownloading(videoId)` return true immediately.

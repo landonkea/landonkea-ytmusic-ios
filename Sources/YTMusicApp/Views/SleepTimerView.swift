@@ -37,6 +37,14 @@ struct SleepTimerView: View { // Declares a SwiftUI View struct. "View" is a pro
     /// after the view is created — it's just a fixed menu of choices.
     let presets = [15, 30, 45, 60]
 
+    /// Whether the "Custom Duration" naming alert is showing.
+    /// Added so users aren't limited to the four fixed presets above —
+    /// e.g. "37 minutes" for an odd-length nap wasn't representable before.
+    @State private var showCustomDurationAlert = false
+
+    /// The text typed into the custom-duration alert's numeric TextField.
+    @State private var customMinutesText = ""
+
     /// The required computed property that defines the layout and content of this view.
     /// Every type that conforms to `View` must provide a `body`. SwiftUI calls this
     /// property (potentially many times) to figure out what to draw on screen — this is
@@ -58,6 +66,27 @@ struct SleepTimerView: View { // Declares a SwiftUI View struct. "View" is a pro
                         dismiss() // Dismisses the modal without changing the timer
                     }
                 }
+            }
+            // Custom-duration alert — lets the user type any number of
+            // minutes instead of being limited to the four fixed presets.
+            .alert("Custom Duration", isPresented: $showCustomDurationAlert) {
+                TextField("Minutes", text: $customMinutesText)
+                    .keyboardType(.numberPad)
+                Button("Start") {
+                    // `Int(...)` returns nil for empty/non-numeric text, and
+                    // the `guard` also rejects 0 or negative values — both
+                    // cases just leave the alert's text as-is instead of
+                    // starting a nonsensical timer.
+                    guard let minutes = Int(customMinutesText), minutes > 0 else { return }
+                    audioPlayer.setSleepTimer(minutes: minutes)
+                    customMinutesText = ""
+                    dismiss()
+                }
+                Button("Cancel", role: .cancel) {
+                    customMinutesText = ""
+                }
+            } message: {
+                Text("Enter a number of minutes")
             }
         }
     }
@@ -121,6 +150,20 @@ struct SleepTimerView: View { // Declares a SwiftUI View struct. "View" is a pro
             // `Hashable` and the presets are all distinct.
             ForEach(presets, id: \.self) { minutes in
                 presetRow(minutes: minutes)
+            }
+
+            // Custom duration — opens the alert defined on `body` above.
+            Button(action: {
+                showCustomDurationAlert = true
+            }) {
+                HStack {
+                    Text("Custom…")
+                        .foregroundColor(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
         } header: { // The header text for this section
             Text("Stop after") // Section header label explaining the purpose of the options below

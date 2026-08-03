@@ -66,11 +66,20 @@ class AudioPlayer: ObservableObject {
     
     /// The full queue of songs. The UI reads this for the queue screen.
     /// This is the source of truth — shuffle modifies this array.
-    @Published var queue: [NowPlaying] = []
-    
+    ///
+    /// `didSet` persists the queue to disk on every change (see
+    /// `saveQueueState()`), so it survives a relaunch — previously only
+    /// recentlyPlayed/downloads/playlists did, and force-quitting mid-queue
+    /// silently lost everything you'd lined up.
+    @Published var queue: [NowPlaying] = [] {
+        didSet { saveQueueState() }
+    }
+
     /// Index of the currently playing song in the queue (-1 = nothing playing).
     /// Used to calculate "up next" songs and navigate forward/backward.
-    @Published var currentIndex: Int = -1
+    @Published var currentIndex: Int = -1 {
+        didSet { saveQueueState() }
+    }
     
     /// Computed property: songs that come after the current song.
     /// Returns an empty array if nothing is playing or we're at the end.
@@ -111,6 +120,18 @@ class AudioPlayer: ObservableObject {
     /// The timer that fires when the sleep timer expires.
     /// When it fires, playback pauses automatically.
     private var sleepTimer: Timer?
+
+    /// The thumbnail URL whose artwork is currently cached in
+    /// `cachedArtwork` below. Used by `updateNowPlayingInfo()` to skip
+    /// redundant artwork fetches on every 0.5s time-observer tick — see the
+    /// comment there for why this matters.
+    private var lastArtworkThumbnailUrl: String?
+
+    /// The `MPMediaItemArtwork` built from `lastArtworkThumbnailUrl`.
+    /// Re-applied to every `nowPlayingInfo` update (not just the tick that
+    /// fetched it) so lock-screen art doesn't flicker away — see
+    /// `updateNowPlayingInfo()`.
+    private var cachedArtwork: MPMediaItemArtwork?
     
     // MARK: - Sleep Timer
     
@@ -125,6 +146,19 @@ class AudioPlayer: ObservableObject {
     /// The date when the sleep timer was started.
     /// Used to calculate remaining time even if the app is backgrounded.
     private var sleepTimerEndDate: Date?
+
+    /// How many seconds before the sleep timer ends that the fade-out
+    /// ramp begins. The ramp runs from full volume down to silent across
+    /// this window, so playback eases to a stop instead of cutting off
+    /// abruptly mid-note.
+    private let sleepTimerFadeDuration: TimeInterval = 12
+
+    /// The playback volume in effect right before the fade-out ramp
+    /// started, so it can be restored once the sleep timer pauses playback
+    /// (otherwise the NEXT song would start back up silently, since we
+    /// ramped the actual player/engine volume down to 0 without touching
+    /// the persisted `volume` property).
+    private var volumeBeforeSleepFade: Double?
     
     // MARK: - Recently Played
     
@@ -138,6 +172,13 @@ class AudioPlayer: ObservableObject {
     
     /// File path for persisting recently played history.
     private let recentlyPlayedPath: URL
+
+    // MARK: - Queue Persistence
+
+    /// File path for persisting the current queue + position, so it
+    /// survives a relaunch (force-quit or the OS terminating the app in
+    /// the background). See `saveQueueState()`/`loadQueueState()`.
+    private let queuePath: URL
     
     // MARK: - Crossfade
     
@@ -188,7 +229,8 @@ class AudioPlayer: ObservableObject {
         // Set up the file path for recently played history
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         self.recentlyPlayedPath = documents.appendingPathComponent("recently_played.json")
-        
+        self.queuePath = documents.appendingPathComponent("queue_state.json")
+
         // Load crossfade settings from UserDefaults (saved by SettingsView)
         self.isCrossfadeEnabled = UserDefaults.standard.bool(forKey: "crossfadeEnabled")
         let savedDuration = UserDefaults.standard.double(forKey: "crossfadeDuration")
@@ -201,6 +243,7 @@ class AudioPlayer: ObservableObject {
         setupAudioSession()       // Configure audio for background playback
         setupRemoteCommandCenter() // Register for lock screen / AirPods controls
         loadRecentlyPlayed()      // Load history from disk
+        loadQueueState()          // Restore the queue + position from the last session
     }
     
     // MARK: - Playback Controls
@@ -723,8 +766,15 @@ class AudioPlayer: ObservableObject {
             return
         }
         
-        guard let player = player else { return }
-        
+        guard let player = player else {
+            // No active AVPlayer — this happens right after launch when a
+            // queue was restored from disk (see loadQueueState()) but
+            // nothing has actually started playing yet. Start it now
+            // instead of silently doing nothing.
+            resumeFromRestoredQueueIfNeeded()
+            return
+        }
+
         if state == .playing {
             player.pause()
             state = .paused
@@ -1116,32 +1166,90 @@ class AudioPlayer: ObservableObject {
     func startSleepTimer(duration: TimeInterval) {
         // Cancel any existing timer first
         stopSleepTimer()
-        
+
         // Calculate when the timer should fire
         sleepTimerEndDate = Date().addingTimeInterval(duration)
         sleepTimerRemaining = duration
         isSleepTimerActive = true
-        
+
         // Start a 1-second timer to update the countdown display
         sleepTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self, let endDate = self.sleepTimerEndDate else { return }
-                
+
                 // Calculate remaining time from the end date (not from a counter)
                 // This is more accurate because it accounts for timer drift
                 let remaining = endDate.timeIntervalSinceNow
-                
+
                 if remaining <= 0 {
                     // Timer expired — pause playback.
                     // togglePlayPause() pauses since a song is playing.
                     self.togglePlayPause()
+                    // Restore full volume so the NEXT time the user presses
+                    // play (this song or another), it isn't silent — see
+                    // the fade-out ramp below, which lowers the actual
+                    // player/engine volume without touching `self.volume`.
+                    self.restoreVolumeAfterSleepFade()
                     self.stopSleepTimer()
                 } else {
                     // Update the countdown display
                     self.sleepTimerRemaining = remaining
+                    // Fade out: once we're within `sleepTimerFadeDuration`
+                    // seconds of the timer ending, ease the volume down to
+                    // silent instead of letting playback cut off abruptly.
+                    self.applySleepFade(remaining: remaining)
                 }
             }
         }
+    }
+
+    /// Ramp playback volume down as the sleep timer approaches zero.
+    ///
+    /// Called every second from the sleep timer's tick handler. Does
+    /// nothing until `remaining` enters the last `sleepTimerFadeDuration`
+    /// seconds, at which point it linearly scales the CURRENT player/engine
+    /// volume down to silent by the time `remaining` reaches 0 — without
+    /// touching the published `volume` property (and therefore without
+    /// moving the user-visible volume slider or being un-done by anything
+    /// that reads `volume` elsewhere).
+    private func applySleepFade(remaining: TimeInterval) {
+        guard remaining <= sleepTimerFadeDuration else { return }
+
+        // Remember the volume we're fading FROM, the first time we enter
+        // the fade window, so the ramp is always relative to what the user
+        // actually had it set to (not always starting from 1.0).
+        if volumeBeforeSleepFade == nil {
+            volumeBeforeSleepFade = volume
+        }
+        let baseVolume = volumeBeforeSleepFade ?? volume
+
+        // `fraction` goes from ~1.0 (just entered the fade window) down to
+        // 0.0 (timer about to fire). Clamped to 0 as a safety net against
+        // any floating-point overshoot right at the boundary.
+        let fraction = max(0, remaining / sleepTimerFadeDuration)
+        let fadedVolume = Float(baseVolume * fraction)
+
+        // Apply directly to whichever backend is actually playing — same
+        // split AudioPlayer uses everywhere else (EQ engine for local
+        // playback with the equalizer on, AVPlayer otherwise).
+        if let eq = eqEngine {
+            eq.setVolume(Double(fadedVolume))
+        } else {
+            player?.volume = fadedVolume
+        }
+    }
+
+    /// Undo `applySleepFade`'s ramp once the sleep timer actually pauses
+    /// playback, so the player/engine is back at the user's real volume
+    /// level for whenever they resume.
+    private func restoreVolumeAfterSleepFade() {
+        guard let restoredVolume = volumeBeforeSleepFade else { return }
+        if let eq = eqEngine {
+            eq.setVolume(restoredVolume)
+        } else {
+            player?.volume = Float(restoredVolume)
+        }
+        volumeBeforeSleepFade = nil
     }
     
     /// Cancel the sleep timer without pausing playback.
@@ -1153,6 +1261,11 @@ class AudioPlayer: ObservableObject {
         sleepTimerEndDate = nil
         sleepTimerRemaining = 0
         isSleepTimerActive = false
+        // If the user cancels the timer WHILE it was mid-fade (e.g. they
+        // started a new timer or tapped Cancel during the last 12 seconds),
+        // restore full volume immediately rather than leaving playback
+        // stuck at whatever faded-down level it was ramping through.
+        restoreVolumeAfterSleepFade()
     }
     
     /// Set a preset sleep timer (15, 30, 45, or 60 minutes).
@@ -1219,6 +1332,99 @@ class AudioPlayer: ObservableObject {
         }
     }
     
+    // MARK: - Queue Persistence
+
+    /// On-disk shape for the persisted queue: the songs plus which one was
+    /// playing. A separate small struct (rather than reusing NowPlaying)
+    /// because we need to bundle `currentIndex` alongside the song array.
+    private struct PersistedQueueState: Codable {
+        let songs: [NowPlaying]
+        let currentIndex: Int
+    }
+
+    /// Save the current queue + position to disk.
+    ///
+    /// Called automatically by `queue`/`currentIndex`'s `didSet` observers,
+    /// so every mutation (play, skip, reorder, shuffle, clear) keeps the
+    /// on-disk copy in sync without every call site needing to remember to
+    /// save explicitly.
+    private func saveQueueState() {
+        do {
+            let state = PersistedQueueState(songs: queue, currentIndex: currentIndex)
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: queuePath)
+        } catch {
+            print("Failed to save queue state: \(error)")
+        }
+    }
+
+    /// Restore the queue + position from disk on launch.
+    ///
+    /// IMPORTANT LIMITATION: this restores the queue's METADATA (titles,
+    /// artwork, position) and shows it immediately in the mini player, but
+    /// does NOT start playback — YouTube's streaming URLs expire a few
+    /// hours after they're issued (see the same limitation documented on
+    /// OfflineManager), so a `NowPlaying.audioUrl` saved from a previous
+    /// session may no longer be playable. Playback only actually starts
+    /// lazily, the first time the user presses Play — see
+    /// `resumeFromRestoredQueueIfNeeded()`, called from `togglePlayPause()`.
+    /// Downloaded (local file) songs don't have this problem, since their
+    /// `audioUrl` is a stable file:// URL rather than a temporary stream.
+    private func loadQueueState() {
+        guard FileManager.default.fileExists(atPath: queuePath.path) else { return }
+
+        do {
+            let data = try Data(contentsOf: queuePath)
+            // Named `persisted` (not `state`) to avoid shadowing this
+            // class's own `state: PlayerState` property below.
+            let persisted = try JSONDecoder().decode(PersistedQueueState.self, from: data)
+            guard !persisted.songs.isEmpty,
+                  persisted.currentIndex >= 0,
+                  persisted.currentIndex < persisted.songs.count else {
+                return
+            }
+
+            queue = persisted.songs
+            currentIndex = persisted.currentIndex
+
+            // Show the restored song in the mini player / lock screen right
+            // away, without touching `player`/`eqEngine` — actual playback
+            // is deferred until the user taps Play (see the limitation
+            // note above).
+            let song = persisted.songs[persisted.currentIndex]
+            currentSong = song
+            duration = Double(song.duration)
+            currentTime = 0
+            state = .stopped
+            updateNowPlayingInfo()
+        } catch {
+            print("Failed to load queue state: \(error)")
+        }
+    }
+
+    /// If the queue/currentSong were restored from disk on launch but
+    /// nothing has actually started playing yet (no AVPlayer or EQ engine
+    /// running), start playback now. Called from `togglePlayPause()` so
+    /// pressing Play on a freshly-launched app (with a restored queue)
+    /// works exactly like pressing Play normally, instead of silently
+    /// doing nothing because `player` is nil.
+    private func resumeFromRestoredQueueIfNeeded() {
+        guard player == nil, eqEngine == nil, let song = currentSong else { return }
+
+        if let url = URL(string: song.audioUrl), url.isFileURL {
+            // Downloaded song — the file:// URL is still valid.
+            Task { await playSongFromLocal(song, localURL: url) }
+        } else {
+            // Streamed song — the URL may have expired since the last
+            // session (see the limitation note on loadQueueState()).
+            // playSong() will simply fail to load if so; there's no
+            // existing error-surfacing path for playback failures in this
+            // file today, so this matches how every other failed-load case
+            // here already behaves.
+            Task { await playSong(song) }
+        }
+    }
+
     // MARK: - Audio Session Setup
     
     /// Configure the audio session for background playback.
@@ -1308,6 +1514,49 @@ class AudioPlayer: ObservableObject {
             self?.seek(to: position.positionTime / (self?.duration ?? 1))
             return .success
         }
+
+        // Skip forward/backward ±15s (lock screen, AirPods, CarPlay
+        // "±15 seconds" buttons). Previously only next/previous TRACK and
+        // scrubbing were wired up here, even though the in-app player
+        // already supports 15s skip via skipForward()/skipBackward() —
+        // this brings the lock screen up to parity with the in-app UI.
+        // `preferredIntervals` tells the system which interval(s) to show
+        // on the button itself (e.g. "15" printed on the skip icon).
+        commandCenter.skipForwardCommand.isEnabled = true
+        commandCenter.skipForwardCommand.preferredIntervals = [15]
+        commandCenter.skipForwardCommand.addTarget { [weak self] _ in
+            self?.skipForward()
+            return .success
+        }
+
+        commandCenter.skipBackwardCommand.isEnabled = true
+        commandCenter.skipBackwardCommand.preferredIntervals = [15]
+        commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
+            self?.skipBackward()
+            return .success
+        }
+
+        // Like / dislike (shown on the lock screen and CarPlay as
+        // thumbs-up/thumbs-down). We only have a "liked" concept in this
+        // app (see LikedSongsManager), not a separate "disliked" list, so:
+        // - "like" toggles the current song's liked state
+        // - "dislike" un-likes it if it was liked (there's nothing further
+        //   to record otherwise)
+        commandCenter.likeCommand.isEnabled = true
+        commandCenter.likeCommand.localizedTitle = "Like"
+        commandCenter.likeCommand.addTarget { [weak self] _ in
+            guard let self, let songId = self.currentSong?.id else { return .noActionableNowPlayingItem }
+            LikedSongsManager.shared?.toggle(songId)
+            return .success
+        }
+
+        commandCenter.dislikeCommand.isEnabled = true
+        commandCenter.dislikeCommand.localizedTitle = "Dislike"
+        commandCenter.dislikeCommand.addTarget { [weak self] _ in
+            guard let self, let songId = self.currentSong?.id else { return .noActionableNowPlayingItem }
+            LikedSongsManager.shared?.unlike(songId)
+            return .success
+        }
     }
     
     // MARK: - Now Playing Info
@@ -1340,26 +1589,51 @@ class AudioPlayer: ObservableObject {
         // Load the album art in the background
         // We fetch the image from the URL, convert it to a MPMediaItemArtwork,
         // and add it to the info dictionary.
-        if let url = URL(string: song.thumbnailUrl) {
+        //
+        // PERFORMANCE NOTE: `updateNowPlayingInfo()` is called on every
+        // 0.5s time-observer tick (to keep the elapsed-time field current),
+        // not just when the song changes. Re-fetching and re-decoding the
+        // artwork image on every single tick would be wasteful even with a
+        // disk cache hit (network round-trip + JPEG decode + wrapping).
+        // `lastArtworkThumbnailUrl`/`cachedArtwork` remember the most
+        // recently built artwork so we only redo that work when the song
+        // (and therefore its artwork) actually changes — every other tick
+        // just re-applies the already-built `cachedArtwork` below.
+        if song.thumbnailUrl == lastArtworkThumbnailUrl, let artwork = cachedArtwork {
+            info[MPMediaItemPropertyArtwork] = artwork
+        } else if let url = URL(string: song.thumbnailUrl) {
             Task {
-                // Download the image data
-                if let (data, _) = try? await URLSession.shared.data(from: url),
+                // Download the image data through the app's shared cached
+                // session (see NetworkCache.swift) instead of
+                // URLSession.shared's stock tiny cache. Without this, the
+                // exact same thumbnail AsyncImage already displays on
+                // screen gets re-downloaded from YouTube every single time
+                // a song starts.
+                if let (data, _) = try? await NetworkCache.session.data(from: url),
                    let image = UIImage(data: data) {
                     // Create artwork (the boundsSize parameter defines the image size)
                     // The trailing closure is a provider that returns the image
                     let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-                    
+
                     // Update the info on the main thread (required for UI)
                     // `await MainActor.run` ensures this runs on the main thread,
                     // even though we're inside a background Task
                     await MainActor.run {
+                        // Only cache/apply if we're still showing the same
+                        // song — guards against a slow fetch for a song the
+                        // user has already skipped past applying stale art.
+                        guard self.currentSong?.thumbnailUrl == song.thumbnailUrl else { return }
+                        self.lastArtworkThumbnailUrl = song.thumbnailUrl
+                        self.cachedArtwork = artwork
                         MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyArtwork] = artwork
                     }
                 }
             }
         }
-        
-        // Set the info (without artwork — artwork loads asynchronously above)
+
+        // Set the info. Artwork is included directly above when already
+        // cached; otherwise it's patched in asynchronously once the fetch
+        // in the Task above completes.
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 }

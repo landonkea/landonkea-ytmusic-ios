@@ -44,6 +44,13 @@ class LikedSongsManager: ObservableObject {
     /// every change is guaranteed to also call `save()`.
     @Published private(set) var likedIds: Set<String> = []
 
+    /// Shared instance so AudioPlayer can read/toggle like state from the
+    /// lock screen / Control Center "like" and "dislike" buttons, which
+    /// only have access to AudioPlayer's MPRemoteCommandCenter handlers —
+    /// not the SwiftUI environment. Mirrors the PlayCountManager.shared /
+    /// EqualizerManager.shared pattern used elsewhere in the app.
+    static var shared: LikedSongsManager?
+
     /// The key under which we store the liked IDs in UserDefaults.
     /// UserDefaults is a simple built-in key-value store iOS provides for
     /// small pieces of app data (settings, preferences) that should persist

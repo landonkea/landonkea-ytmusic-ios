@@ -27,6 +27,13 @@ struct EqualizerView: View {
     /// a closure that closes whatever presented this view (typically a `.sheet`).
     @Environment(\.dismiss) var dismiss
 
+    /// Whether the "name this preset" alert (for saving the current band
+    /// gains as a new custom preset) is showing.
+    @State private var showSavePresetAlert = false
+
+    /// The name typed into that alert's TextField.
+    @State private var newPresetName = ""
+
     /// The main view content — the required `body` computed property every `View` must
     /// provide. SwiftUI calls it to figure out what to draw; this "declarative" style
     /// means you describe *what* the UI should look like for the current data, not the
@@ -51,6 +58,19 @@ struct EqualizerView: View {
                         dismiss() // Close the equalizer view
                     }
                 }
+            }
+            // Alert for naming a new custom preset from the current sliders.
+            .alert("Save Preset", isPresented: $showSavePresetAlert) {
+                TextField("Preset Name", text: $newPresetName)
+                Button("Save") {
+                    equalizer.saveCustomPreset(name: newPresetName)
+                    newPresetName = ""
+                }
+                Button("Cancel", role: .cancel) {
+                    newPresetName = ""
+                }
+            } message: {
+                Text("Save the current band settings as a named preset you can reuse later.")
             }
         }
     }
@@ -172,10 +192,25 @@ struct EqualizerView: View {
     /// Grid of preset buttons for quick EQ settings.
     private var presetsGridSection: some View {
         VStack(spacing: 12) {
-            // Section header
-            Text("Presets")
-                .font(.headline) // Bold section header
-                .frame(maxWidth: .infinity, alignment: .leading) // Stretch left
+            // Section header + "Save Current" button, side by side.
+            HStack {
+                Text("Presets")
+                    .font(.headline) // Bold section header
+
+                Spacer()
+
+                // Lets the user name and persist whatever they've currently
+                // got dialed in on the sliders — previously the app's only
+                // "Custom" state was transient: switching presets, or
+                // relaunching the app, lost it with no way to get it back.
+                Button {
+                    showSavePresetAlert = true
+                } label: {
+                    Label("Save Current", systemImage: "plus.circle")
+                        .font(.subheadline)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading) // Stretch left
 
             // LazyVGrid creates a responsive grid.
             // "Lazy" means rows are only created as they're about to become visible,
@@ -212,6 +247,27 @@ struct EqualizerView: View {
                             equalizer.applyPreset(name) // Apply the selected preset
                         }
                     )
+                }
+
+                // The user's own named custom presets, sorted the same way
+                // as the built-in list above. Long-press (or on iPad,
+                // right-click) to delete — matches the standard iOS pattern
+                // for removing a saved item without a dedicated edit mode.
+                ForEach(Array(equalizer.customPresets.keys.sorted()), id: \.self) { name in
+                    PresetButton(
+                        name: name,
+                        isActive: equalizer.activePreset == name,
+                        action: {
+                            equalizer.applyPreset(name)
+                        }
+                    )
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            equalizer.deleteCustomPreset(name: name)
+                        } label: {
+                            Label("Delete Preset", systemImage: "trash")
+                        }
+                    }
                 }
             }
         }

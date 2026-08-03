@@ -1098,15 +1098,25 @@ struct PlaylistPickerSheet: View {
     /// Whether we're currently adding the song (shows loading state)
     @State private var isAdding = false
 
+    /// Whether to show the "New Playlist" naming alert.
+    /// Mirrors the exact pattern used by PlaylistsView's "New Playlist"
+    /// alert — see that file for the fuller explanation of each piece.
+    @State private var showNewPlaylistAlert = false
+
+    /// The name being typed for the new playlist in the alert's TextField.
+    @State private var newPlaylistName = ""
+
     var body: some View {
         NavigationView {
             List {
                 // Create New Playlist option at the top
                 Section {
                     Button(action: {
-                        // TODO: Show create playlist alert
-                        // For now, just create a default playlist
-                        playlistManager.createPlaylist(name: "My Playlist")
+                        // FIX: this used to silently create a playlist named
+                        // "My Playlist" with no way to name it (the TODO
+                        // this replaces). Now it shows a naming alert, same
+                        // as the "New Playlist" flow in the Library tab.
+                        showNewPlaylistAlert = true
                     }) {
                         HStack {
                             Image(systemName: "plus.circle.fill")
@@ -1134,6 +1144,25 @@ struct PlaylistPickerSheet: View {
                         isPresented = false
                     }
                 }
+            }
+            .alert("New Playlist", isPresented: $showNewPlaylistAlert) {
+                TextField("Playlist Name", text: $newPlaylistName)
+                Button("Create") {
+                    let trimmed = newPlaylistName.trimmingCharacters(in: .whitespaces)
+                    guard !trimmed.isEmpty else { return }
+                    // Create the playlist AND immediately add the song the
+                    // user was trying to save — that's the whole point of
+                    // reaching this alert from the "Add to Playlist" sheet,
+                    // not just an empty playlist.
+                    let playlist = playlistManager.createPlaylist(name: trimmed)
+                    addSongToPlaylist(playlist)
+                    newPlaylistName = ""
+                }
+                Button("Cancel", role: .cancel) {
+                    newPlaylistName = ""
+                }
+            } message: {
+                Text("Enter a name for your new playlist")
             }
         }
     }

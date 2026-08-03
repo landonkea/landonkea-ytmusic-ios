@@ -61,6 +61,15 @@ class EqualizerManager: ObservableObject {
     /// Individual band gains (in decibels) for the 10 frequency bands.
     /// Range: -12.0 to +12.0 dB. 0.0 = no change (flat).
     @Published var bandGains: [Double] = Array(repeating: 0.0, count: 10)
+
+    /// User-saved custom presets: name → 10 band gains, e.g.
+    /// `["Gym Mix": [8, 6, 4, ...]]`. Unlike the built-in `presets`
+    /// dictionary (a `static let`, baked into the app), these are created
+    /// by the user from whatever they've dialed in on the sliders and
+    /// persisted to UserDefaults so they survive a relaunch — previously
+    /// there was only a transient, unsaveable "Custom" state that reverted
+    /// the moment you picked a different preset or restarted the app.
+    @Published private(set) var customPresets: [String: [Double]] = [:]
     
     // MARK: - Callback
     
@@ -141,22 +150,61 @@ class EqualizerManager: ObservableObject {
     /// Create the equalizer manager and load saved settings.
     init() {
         loadSettings()
+        loadCustomPresets()
     }
-    
+
     // MARK: - Public Methods
-    
+
     /// Apply a preset by name.
     ///
-    /// - Parameter preset: The name of the preset (e.g. "Bass Boost")
+    /// Checks the built-in `presets` dictionary first, then the user's
+    /// saved `customPresets` — so this one method works for either kind,
+    /// and callers (EqualizerView) don't need to know which list a given
+    /// preset name came from.
+    ///
+    /// - Parameter preset: The name of the preset (e.g. "Bass Boost" or a
+    ///   user-created custom preset name)
     func applyPreset(_ preset: String) {
-        guard let gains = EqualizerManager.presets[preset] else { return }
-        
+        guard let gains = EqualizerManager.presets[preset] ?? customPresets[preset] else { return }
+
         activePreset = preset
         bandGains = gains
         applyGains()
         saveSettings()
     }
-    
+
+    /// Save the CURRENT band gains as a new named custom preset (or
+    /// overwrite an existing custom preset with the same name).
+    ///
+    /// - Parameter name: The user-chosen preset name. Ignored (no-op) if
+    ///   empty/whitespace-only after trimming.
+    func saveCustomPreset(name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+
+        customPresets[trimmed] = bandGains
+        // Saving effectively "names" whatever was in the transient
+        // "Custom" state, so make the newly-saved preset the active one.
+        activePreset = trimmed
+        saveCustomPresets()
+        saveSettings()
+    }
+
+    /// Delete a previously saved custom preset.
+    ///
+    /// If the deleted preset was the currently active one, falls back to
+    /// "Flat" rather than leaving `activePreset` pointing at a name that no
+    /// longer exists in `customPresets`.
+    func deleteCustomPreset(name: String) {
+        customPresets.removeValue(forKey: name)
+
+        if activePreset == name {
+            applyPreset("Flat")
+        }
+
+        saveCustomPresets()
+    }
+
     /// Set the gain for a specific frequency band.
     ///
     /// - Parameters:
@@ -221,10 +269,27 @@ class EqualizerManager: ObservableObject {
     private func loadSettings() {
         isEnabled = UserDefaults.standard.bool(forKey: "eqEnabled")
         activePreset = UserDefaults.standard.string(forKey: "eqPreset") ?? "Flat"
-        
+
         if let savedGains = UserDefaults.standard.array(forKey: "eqBandGains") as? [Double],
            savedGains.count == 10 {
             bandGains = savedGains
+        }
+    }
+
+    /// Save `customPresets` to UserDefaults.
+    ///
+    /// `[String: [Double]]` is a "property list" compatible type (only
+    /// Strings, Numbers, and nested collections of those) — `UserDefaults`
+    /// can store it directly, no manual JSON encoding needed, the same way
+    /// `isEnabled`/`activePreset`/`bandGains` are stored above.
+    private func saveCustomPresets() {
+        UserDefaults.standard.set(customPresets, forKey: "eqCustomPresets")
+    }
+
+    /// Load `customPresets` from UserDefaults.
+    private func loadCustomPresets() {
+        if let saved = UserDefaults.standard.dictionary(forKey: "eqCustomPresets") as? [String: [Double]] {
+            customPresets = saved
         }
     }
 }

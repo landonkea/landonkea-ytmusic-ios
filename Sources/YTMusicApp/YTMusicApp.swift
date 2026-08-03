@@ -63,6 +63,9 @@ struct YTMusicApp: App {
         // The audio player checks EqualizerManager.shared to decide whether
         // to route local playback through the equalizer engine.
         EqualizerManager.shared = equalizer
+        // The audio player checks LikedSongsManager.shared to wire up the
+        // lock screen / Control Center "like"/"dislike" remote commands.
+        LikedSongsManager.shared = likedSongs
     }
     
     var body: some Scene {

@@ -78,6 +78,41 @@ class PlaylistManager: ObservableObject {
         return playlist
     }
 
+    /// Create a new playlist pre-populated with a list of songs — e.g. from
+    /// QueueView's "Save Queue as Playlist" button.
+    ///
+    /// This exists as its own method (rather than callers doing
+    /// `createPlaylist(name:)` followed by a loop of `addSong(_:to:)`)
+    /// because that two-step version would trigger a disk save for every
+    /// single song (each `addSong` call ends with `savePlaylists()`) — for
+    /// a 50-song queue that's 50 redundant JSON encode+write cycles when
+    /// one will do.
+    ///
+    /// - Parameters:
+    ///   - name: The playlist name
+    ///   - songs: The initial songs, in order (duplicates by video ID are
+    ///     dropped, same as `addSong(_:to:)`'s no-duplicates rule)
+    /// - Returns: The newly created playlist
+    @discardableResult
+    func createPlaylist(name: String, songs: [NowPlaying]) -> Playlist {
+        var uniqueSongs: [NowPlaying] = []
+        var seenIds = Set<String>()
+        for song in songs where !seenIds.contains(song.id) {
+            uniqueSongs.append(song)
+            seenIds.insert(song.id)
+        }
+
+        let playlist = Playlist(
+            id: UUID().uuidString,
+            name: name,
+            songs: uniqueSongs,
+            createdAt: Date()
+        )
+        playlists.insert(playlist, at: 0)
+        savePlaylists()
+        return playlist
+    }
+
     /// Rename an existing playlist.
     ///
     /// - Parameters:

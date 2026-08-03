@@ -18,7 +18,13 @@ struct ContentView: View {
     
     /// The API client — also shared across all views.
     @EnvironmentObject var apiClient: APIClient
-    
+
+    /// The offline manager — used here only to surface a "Wi-Fi Only"
+    /// alert app-wide when a download is skipped because the device isn't
+    /// on Wi-Fi (downloads can be triggered from several different screens,
+    /// so this is caught once at the root instead of in every view).
+    @EnvironmentObject var offlineManager: OfflineManager
+
     /// Controls whether the full-screen player is shown.
     /// @State = owned by this view. When it changes, the view re-renders.
     @State private var showFullPlayer = false
@@ -131,6 +137,24 @@ struct ContentView: View {
         // presses, not to draw anything visible.
         .background {
             keyboardShortcutButtons
+        }
+        // "Wi-Fi Only" alert — shown whenever OfflineManager skips a
+        // download because Wi-Fi Only is enabled and we're on cellular.
+        // Bound at the root so it works no matter which screen (search
+        // results, a playlist, song detail, the player) started the
+        // download.
+        .alert(
+            "Wi-Fi Required",
+            isPresented: Binding(
+                get: { offlineManager.wifiOnlyBlockedMessage != nil },
+                set: { isPresented in
+                    if !isPresented { offlineManager.wifiOnlyBlockedMessage = nil }
+                }
+            )
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(offlineManager.wifiOnlyBlockedMessage ?? "")
         }
     }
 

@@ -23,9 +23,18 @@ struct QueueView: View {
     /// whenever the audio player's published properties change.
     @EnvironmentObject var audioPlayer: AudioPlayer
 
+    /// The playlist manager — used by "Save Queue as Playlist" below.
+    @EnvironmentObject var playlistManager: PlaylistManager
+
     /// `dismiss` is a SwiftUI environment value that lets us close this screen.
     /// We call `dismiss()` when the user taps "Done".
     @Environment(\.dismiss) var dismiss
+
+    /// Whether the "Save Queue as Playlist" naming alert is showing.
+    @State private var showSaveAsPlaylistAlert = false
+
+    /// The name typed into that alert's TextField.
+    @State private var newPlaylistName = ""
 
     var body: some View {
         // NavigationView wraps the screen with a nav bar (title + toolbar buttons)
@@ -46,15 +55,47 @@ struct QueueView: View {
                     }
                 }
 
-                // "Clear" button on the right — only shows if there's more than 1 song
+                // "Clear" and "Save as Playlist" on the right — only shown
+                // when there's actually a queue worth acting on.
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    if audioPlayer.queue.count > 1 {
-                        Button("Clear") {
-                            audioPlayer.clearQueue() // Keeps current song, removes everything else
+                    if !audioPlayer.queue.isEmpty {
+                        HStack {
+                            // "Save Queue as Playlist" — lets the user turn
+                            // whatever they've queued up into a reusable
+                            // playlist without retyping every song.
+                            Button {
+                                showSaveAsPlaylistAlert = true
+                            } label: {
+                                Image(systemName: "plus.square.on.square")
+                            }
+
+                            if audioPlayer.queue.count > 1 {
+                                Button("Clear") {
+                                    audioPlayer.clearQueue() // Keeps current song, removes everything else
+                                }
+                                .foregroundColor(.red) // Red = destructive action
+                            }
                         }
-                        .foregroundColor(.red) // Red = destructive action
                     }
                 }
+            }
+            .alert("Save Queue as Playlist", isPresented: $showSaveAsPlaylistAlert) {
+                TextField("Playlist Name", text: $newPlaylistName)
+                Button("Save") {
+                    let trimmed = newPlaylistName.trimmingCharacters(in: .whitespaces)
+                    guard !trimmed.isEmpty else { return }
+                    // Saves the FULL queue (current song + up next), in
+                    // order, as a new playlist — see PlaylistManager's
+                    // createPlaylist(name:songs:) for why this is a single
+                    // batched call rather than one addSong per song.
+                    playlistManager.createPlaylist(name: trimmed, songs: audioPlayer.queue)
+                    newPlaylistName = ""
+                }
+                Button("Cancel", role: .cancel) {
+                    newPlaylistName = ""
+                }
+            } message: {
+                Text("Save the \(audioPlayer.queue.count) song\(audioPlayer.queue.count == 1 ? "" : "s") in your queue as a new playlist.")
             }
         }
     }
@@ -280,4 +321,5 @@ struct QueueView: View {
 #Preview {
     QueueView()
         .environmentObject(AudioPlayer())
+        .environmentObject(PlaylistManager())
 }
