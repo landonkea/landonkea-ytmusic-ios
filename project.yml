@@ -117,6 +117,24 @@ targets:
         # YTMusicApp.entitlements for the full explanation, including the
         # no-signing-team local-build caveat.
         CODE_SIGN_ENTITLEMENTS: Sources/YTMusicApp/Resources/YTMusicApp.entitlements
+        # ── Mac Catalyst ────────────────────────────────────────────
+        # Lets this iOS target also build/run as a native Mac app via
+        # Catalyst (UIKit/SwiftUI translated to AppKit under the hood).
+        SUPPORTS_MACCATALYST: YES
+        # "1,2,6" = iPhone + iPad + Mac (Catalyst). Without 6 in this
+        # list, Xcode won't offer/produce a Mac Catalyst build at all.
+        TARGETED_DEVICE_FAMILY: "1,2,6"
+        # Keep ONE bundle identifier (com.landonkea.ytmusic) across iOS
+        # and Mac Catalyst instead of Xcode's default behavior of
+        # appending ".maccatalyst" for the Catalyst variant. This matters
+        # because YTMusicWidgetExtension's Info.plist and embedding
+        # validation require the extension's bundle id to stay prefixed
+        # by the CONTAINING app's bundle id (com.landonkea.ytmusic.widget
+        # under com.landonkea.ytmusic) — if the app's Catalyst id
+        # diverged to com.landonkea.ytmusic.maccatalyst, that prefix
+        # relationship (and the shared App Group) would break for the
+        # Catalyst build.
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
 
   # ── YTMusicWidgetExtension — Home Screen / Lock Screen widget ──
   # A WidgetKit "app extension" target: a small, separate process the
@@ -151,6 +169,14 @@ targets:
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.0"
         SKIP_INSTALL: YES
+        # Must also support Mac Catalyst — an embedded extension has to be
+        # built for every platform variant its containing app builds for,
+        # or Xcode can't embed it into the Catalyst variant of YTMusicApp.
+        # WidgetKit widgets appear in Notification Center on Mac when a
+        # Catalyst app ships one; no extension code changes are needed.
+        SUPPORTS_MACCATALYST: YES
+        TARGETED_DEVICE_FAMILY: "1,2,6"
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
 
   # ── YTMusicAppTests — unit tests, runs on the simulator ────────
   # Exercises real runtime behavior (not just compilation), e.g. the
@@ -169,6 +195,12 @@ targets:
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: YES
+        # So `xcodebuild test` can also target the Mac Catalyst
+        # destination (the test bundle has to support every platform
+        # variant its host app builds for).
+        SUPPORTS_MACCATALYST: YES
+        TARGETED_DEVICE_FAMILY: "1,2,6"
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO
 
 # "schemes:" defines the build/run scheme used by Xcode's toolbar.
 schemes:
