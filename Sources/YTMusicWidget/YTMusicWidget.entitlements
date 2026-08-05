@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+App Group entitlement for the YTMusicWidget extension — must declare the
+SAME group as Sources/YTMusicApp/Resources/YTMusicApp.entitlements. See
+that file's comment for the full explanation.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.landonkea.ytmusic</string>
+	</array>
+</dict>
+</plist>

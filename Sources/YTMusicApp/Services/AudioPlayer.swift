@@ -2,6 +2,7 @@ import AVFoundation  // Apple's framework for audio/video playback (AVPlayer, AV
 import Combine       // Apple's reactive programming framework (not heavily used here, but imported for future)
 import MediaPlayer   // Apple's framework for Control Center, lock screen, and AirPods integration
 import SwiftUI       // Apple's UI framework (needed for @MainActor and ObservableObject)
+import WidgetKit     // WidgetCenter.reloadTimelines — tells the Now Playing widget to redraw
 
 // MARK: - Audio Player
 
@@ -169,7 +170,16 @@ class AudioPlayer: ObservableObject {
     /// fetched it) so lock-screen art doesn't flicker away — see
     /// `updateNowPlayingInfo()`.
     private var cachedArtwork: MPMediaItemArtwork?
-    
+
+    /// Identifies the last "song id + play/pause state" pushed to the
+    /// Home Screen / Lock Screen widget via `updateWidgetSnapshot(song:)`.
+    /// `updateNowPlayingInfo()` runs on every 0.5s progress tick (to keep
+    /// the lock screen's elapsed time current), but the widget only needs
+    /// a fresh App Group write + WidgetKit reload when the song or
+    /// play/pause state actually changes — not every tick. Comparing
+    /// against this key is what makes that skip possible.
+    private var lastWidgetSnapshotKey: String?
+
     // MARK: - Sleep Timer
     
     /// Whether the sleep timer is active.
@@ -1684,9 +1694,12 @@ class AudioPlayer: ObservableObject {
         guard let song = currentSong else {
             // Nothing playing — clear the info
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            updateWidgetSnapshot(song: nil)
             return
         }
-        
+
+        updateWidgetSnapshot(song: song)
+
         // Build the info dictionary with standard media keys
         var info = [String: Any]()
         info[MPMediaItemPropertyTitle] = song.title           // Song title
@@ -1744,6 +1757,49 @@ class AudioPlayer: ObservableObject {
         // cached; otherwise it's patched in asynchronously once the fetch
         // in the Task above completes.
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    /// Push the latest "now playing" state to the Home Screen / Lock Screen
+    /// widget through the shared App Group container (see
+    /// `NowPlayingSnapshot.swift`), and ask WidgetKit to redraw it.
+    ///
+    /// Guarded by `lastWidgetSnapshotKey` so this only writes + triggers a
+    /// widget reload when the song identity or play/pause state changes —
+    /// `updateNowPlayingInfo()` (this method's only caller) runs on every
+    /// 0.5s progress tick, and reloading widget timelines that often would
+    /// be wasteful (and Apple budgets how often an app may request
+    /// reloads). The widget itself still shows a live-advancing progress
+    /// bar between reloads via `NowPlayingSnapshot.projectedElapsedSeconds`.
+    /// - Parameter song: the currently loaded song, or `nil` if playback
+    ///   has stopped entirely.
+    private func updateWidgetSnapshot(song: NowPlaying?) {
+        guard let song else {
+            // Only clear + reload once, the first time we transition to
+            // "nothing playing" — not on every subsequent tick.
+            if lastWidgetSnapshotKey != nil {
+                NowPlayingSnapshotStore.clear()
+                lastWidgetSnapshotKey = nil
+                WidgetCenter.shared.reloadTimelines(ofKind: NowPlayingSnapshotStore.widgetKind)
+            }
+            return
+        }
+
+        let key = "\(song.id)|\(state == .playing)"
+        guard key != lastWidgetSnapshotKey else { return }
+        lastWidgetSnapshotKey = key
+
+        let snapshot = NowPlayingSnapshot(
+            videoId: song.id,
+            title: song.title,
+            artist: song.artist,
+            thumbnailUrl: song.thumbnailUrl,
+            isPlaying: state == .playing,
+            elapsedSeconds: currentTime,
+            durationSeconds: duration > 0 ? duration : Double(song.duration),
+            updatedAt: Date()
+        )
+        NowPlayingSnapshotStore.save(snapshot)
+        WidgetCenter.shared.reloadTimelines(ofKind: NowPlayingSnapshotStore.widgetKind)
     }
 }
 

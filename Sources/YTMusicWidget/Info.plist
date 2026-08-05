@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+Info.plist for the YTMusicWidget extension target.
+
+Unlike the main app's Info.plist (which is a MERGE FRAGMENT layered onto an
+Xcode-generated plist — see Sources/YTMusicApp/Resources/Info.plist), this
+is the extension's COMPLETE Info.plist: GENERATE_INFOPLIST_FILE is NO for
+this target in project.yml, so nothing else supplies the standard keys.
+
+The one key that actually matters functionally is NSExtensionPointIdentifier
+= "com.apple.widgetkit-extension" — that's what tells iOS this extension
+bundle is a WidgetKit widget (as opposed to, say, a share extension or
+today-extension) and to look for a WidgetBundle's @main entry point inside it.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>YT Music Widgets</string>
+	<!--
+	Xcode only auto-substitutes $(PRODUCT_BUNDLE_IDENTIFIER) into
+	CFBundleIdentifier when GENERATE_INFOPLIST_FILE is YES. This target
+	sets it to NO (see project.yml), so without this explicit key/value
+	the compiled Info.plist ends up with no CFBundleIdentifier at all —
+	which fails Xcode's "embedded binary must be prefixed with the
+	parent app's bundle identifier" validation when embedding this
+	extension into YTMusicApp.
+	-->
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<!--
+	Same story as CFBundleIdentifier above: normally auto-supplied when
+	GENERATE_INFOPLIST_FILE is YES, but this target opts out of that, so
+	it must be declared explicitly or the compiled extension has no
+	executable to launch and the app fails to install entirely.
+	-->
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<!--
+	Also normally auto-supplied by GENERATE_INFOPLIST_FILE. Its absence
+	fails installd's bundle validation outright: "does not have a
+	CFBundleName key with a non-zero length string value in its
+	Info.plist" — the app won't install at all (not even a launch-time
+	failure; install itself is rejected), which is what actually caught
+	this omission during a simulator install/test run.
+	-->
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
+</dict>
+</plist>

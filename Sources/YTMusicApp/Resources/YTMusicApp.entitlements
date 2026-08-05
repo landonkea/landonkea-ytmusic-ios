@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+App Group entitlement for YTMusicApp.
+
+Grants this app access to the group.com.landonkea.ytmusic shared container,
+which is how AudioPlayer hands "now playing" state to the YTMusicWidget
+extension (see Sources/YTMusicShared/NowPlayingSnapshot.swift for the full
+explanation). YTMusicWidget.entitlements declares the SAME group string —
+both targets must list an identical App Group for the shared container to
+resolve to the same place for each process.
+
+NOTE ON LOCAL/CI BUILDS WITHOUT A SIGNING TEAM: App Groups are normally
+provisioned through a paid Apple Developer account. In this repo (no
+committed signing team, "sign to run locally" style local builds),
+UserDefaults(suiteName:) against this group may resolve to nil rather than
+a real shared container. NowPlayingSnapshotStore treats that as "shared
+state unavailable" and no-ops gracefully — the app's own playback is
+unaffected; only the widget would show its empty state until a real
+provisioning profile with this App Group capability is set up.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.landonkea.ytmusic</string>
+	</array>
+</dict>
+</plist>

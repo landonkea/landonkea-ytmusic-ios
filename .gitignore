@@ -33,7 +33,16 @@ Package.resolved
 
 # App specific
 *.mobileprovision
+# Entitlements files are usually machine/Xcode-generated and gitignored by
+# convention, but this repo's two are small, hand-authored, secret-free
+# config (just the shared App Group ID for the Now Playing widget) that
+# the build genuinely depends on — see project.yml's CODE_SIGN_ENTITLEMENTS
+# settings. Without committing them, a fresh clone can't build at all
+# (CODE_SIGN_ENTITLEMENTS pointing at a nonexistent file fails the build),
+# so they're explicitly un-ignored rather than left to the blanket rule.
 *.entitlements
+!Sources/YTMusicApp/Resources/YTMusicApp.entitlements
+!Sources/YTMusicWidget/YTMusicWidget.entitlements
 
 # Secrets — real values are gitignored; Config/Secrets.example.xcconfig
 # (committed) documents every key and is the template to copy from.

@@ -37,10 +37,13 @@ targets:
     type: application
     platform: iOS
     # All app source files (views, services, utilities) AND the
-    # API layer sources (client, models) — one module total.
+    # API layer sources (client, models) — one module total. Also includes
+    # Sources/YTMusicShared, the small App-Group-sync types shared with the
+    # YTMusicWidgetExtension target below (see NowPlayingSnapshot.swift).
     sources:
       - path: Sources/YTMusicApp
       - path: Sources/YTMusicAPI
+      - path: Sources/YTMusicShared
     # Apple SDK frameworks the app uses (imported in its source files):
     dependencies:
       # AVFoundation — audio playback (AVPlayer in AudioPlayer).
@@ -60,6 +63,15 @@ targets:
       # vs. cellular so the "Wi-Fi Only" downloads setting is actually
       # enforced instead of just cosmetic.
       - sdk: Network.framework
+      # WidgetKit — WidgetCenter.reloadTimelines(ofKind:), called by
+      # AudioPlayer whenever the song/play state changes so the Home
+      # Screen / Lock Screen Now Playing widget redraws.
+      - sdk: WidgetKit.framework
+      # Embed the widget extension into the app bundle so installing the
+      # app also installs its widget (the standard way a widget ships —
+      # there's no separate download).
+      - target: YTMusicWidgetExtension
+        embed: true
     settings:
       base:
         # The unique bundle identifier for the app.
@@ -73,7 +85,8 @@ targets:
         # dropped by GENERATE_INFOPLIST_FILE because Xcode only
         # auto-injects INFOPLIST_KEY_* settings for keys it recognizes as
         # standard. This makes Xcode MERGE the fragment's custom entries
-        # (like INNERTUBE_API_KEY) into the generated plist instead.
+        # (like INNERTUBE_API_KEY and the "ytmusic://" URL scheme the
+        # widget deep-links back into) into the generated plist instead.
         INFOPLIST_FILE: Sources/YTMusicApp/Resources/Info.plist
         # The app uses SwiftUI @main — no storyboard needed.
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
@@ -92,6 +105,52 @@ targets:
         CODE_SIGN_STYLE: Automatic
         # SwiftUI lifecycle with a modern deployment target.
         SWIFT_VERSION: "5.0"
+        # Explicit version numbers (rather than leaving them to Xcode's
+        # defaults) so they match YTMusicWidget/Info.plist's hardcoded
+        # CFBundleShortVersionString/CFBundleVersion — an embedded
+        # extension's CFBundleVersion must match its containing app's, or
+        # Xcode's embedded-binary validation prints a warning at build time.
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # Grants access to the group.com.landonkea.ytmusic shared
+        # container the Now Playing widget reads from — see
+        # YTMusicApp.entitlements for the full explanation, including the
+        # no-signing-team local-build caveat.
+        CODE_SIGN_ENTITLEMENTS: Sources/YTMusicApp/Resources/YTMusicApp.entitlements
+
+  # ── YTMusicWidgetExtension — Home Screen / Lock Screen widget ──
+  # A WidgetKit "app extension" target: a small, separate process the
+  # system launches to render the Now Playing widget. It never runs
+  # AudioPlayer or touches the network beyond fetching the current song's
+  # artwork — it just reads the snapshot AudioPlayer wrote to the shared
+  # App Group container. See Sources/YTMusicShared/NowPlayingSnapshot.swift
+  # for the full data-flow explanation.
+  YTMusicWidgetExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/YTMusicWidget
+      - path: Sources/YTMusicShared
+    dependencies:
+      # WidgetKit — Widget, WidgetBundle, TimelineProvider, TimelineEntry.
+      - sdk: WidgetKit.framework
+      # SwiftUI — the widget's views (SmallNowPlayingView, etc.).
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.landonkea.ytmusic.widget
+        # This target supplies its own complete Info.plist (with the
+        # NSExtensionPointIdentifier that marks it as a WidgetKit
+        # extension) instead of a generated one.
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Sources/YTMusicWidget/Info.plist
+        # Same App Group as YTMusicApp.entitlements — required for both
+        # processes to resolve the same shared UserDefaults suite.
+        CODE_SIGN_ENTITLEMENTS: Sources/YTMusicWidget/YTMusicWidget.entitlements
+        ONLY_ACTIVE_ARCH: YES
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        SKIP_INSTALL: YES
 
   # ── YTMusicAppTests — unit tests, runs on the simulator ────────
   # Exercises real runtime behavior (not just compilation), e.g. the

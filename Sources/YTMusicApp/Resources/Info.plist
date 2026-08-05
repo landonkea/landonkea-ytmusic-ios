@@ -23,5 +23,27 @@
 	-->
 	<key>INNERTUBE_API_KEY</key>
 	<string>$(INNERTUBE_API_KEY)</string>
+
+	<!--
+	CFBundleURLTypes registers the "ytmusic://" custom URL scheme so the
+	Now Playing widget (Sources/YTMusicWidget) can set `.widgetURL(...)`
+	to deep-link back into this app when tapped. Without this registration
+	iOS has no app to route an "ytmusic://" URL to, and tapping the widget
+	would silently do nothing. There's no INFOPLIST_KEY_* shortcut for
+	CFBundleURLTypes (it's not one of Xcode's "well-known" auto-synthesized
+	keys), so — like INNERTUBE_API_KEY above — it's declared directly here
+	and merged into the generated Info.plist.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.landonkea.ytmusic</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>ytmusic</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
