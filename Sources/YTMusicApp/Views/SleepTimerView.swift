@@ -57,6 +57,7 @@ struct SleepTimerView: View { // Declares a SwiftUI View struct. "View" is a pro
                 activeTimerSection // Only actually renders content when a timer is running (see below)
                 presetOptionsSection // The list of selectable preset durations
                 endOfTrackSection // The "End of current track" option
+                endOfQueueSection // The "Stop after this album/playlist finishes" smart option
             }
             .navigationTitle("Sleep Timer") // Sets the title displayed in the navigation bar
             .navigationBarTitleDisplayMode(.inline) // Uses inline (compact) title mode instead of large titles
@@ -220,6 +221,51 @@ struct SleepTimerView: View { // Declares a SwiftUI View struct. "View" is a pro
                 dismiss() // Closes the modal after the timer is set
             }) {
                 Text("End of current track") // The button label explaining this option
+            }
+        }
+    }
+
+    /// "Stop after this album/playlist finishes" section — a smart sleep
+    /// timer that isn't tied to a fixed duration. Instead it watches the
+    /// current queue and stops playback once the last song in it ends,
+    /// however long that actually takes.
+    ///
+    /// Only shown when there's something queued after the current song —
+    /// with nothing left to play through, this option is indistinguishable
+    /// from "End of current track" above, so hiding it avoids a
+    /// meaningless duplicate row.
+    @ViewBuilder
+    private var endOfQueueSection: some View {
+        if !audioPlayer.upNext.isEmpty {
+            Section {
+                Button(action: {
+                    audioPlayer.startSleepTimerAtEndOfQueue()
+                    dismiss()
+                }) {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text("Stop after this album/playlist finishes")
+                                .foregroundColor(.primary)
+
+                            // "+3 more" — the current song plus everything
+                            // still queued after it.
+                            Text("\(audioPlayer.upNext.count + 1) songs remaining")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Spacer()
+
+                        // Show a checkmark if this specific mode (as opposed
+                        // to a fixed-duration timer) is the one active.
+                        if audioPlayer.isSleepTimerActive && audioPlayer.sleepTimerStopsAtQueueEnd {
+                            Image(systemName: "checkmark")
+                                .foregroundColor(.purple)
+                        }
+                    }
+                }
+            } footer: {
+                Text("Playback will pause after the last song in the current queue finishes, instead of after a fixed amount of time.")
             }
         }
     }

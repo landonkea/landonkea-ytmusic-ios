@@ -189,7 +189,21 @@ class AudioPlayer: ObservableObject {
     /// Seconds remaining until the sleep timer stops playback.
     /// Updated every second by the timer. When it reaches 0, playback pauses.
     @Published var sleepTimerRemaining: TimeInterval = 0
-    
+
+    /// Whether the active sleep timer is in "smart" mode — stop once the
+    /// current queue (the album or playlist the user is listening to)
+    /// finishes, rather than after a fixed duration.
+    ///
+    /// When this is true, `sleepTimerRemaining` is still kept updated every
+    /// second for the countdown UI (see `updateQueueEndSleepTimerEstimate()`),
+    /// but it's only an ESTIMATE — the actual stop condition, checked in
+    /// `handleSongEnded()`, is queue position (currentIndex reaching the
+    /// last item), not this countdown reaching zero. That estimate assumes
+    /// every remaining track plays to completion at its full listed
+    /// duration, which is usually right but can drift from reality (e.g.
+    /// the user skips around) — the real trigger never does.
+    @Published private(set) var sleepTimerStopsAtQueueEnd: Bool = false
+
     /// The date when the sleep timer was started.
     /// Used to calculate remaining time even if the app is backgrounded.
     private var sleepTimerEndDate: Date?
@@ -643,6 +657,18 @@ class AudioPlayer: ObservableObject {
     /// If crossfade is enabled and there's a next song, the transition
     /// overlaps both songs for a smooth fade instead of an abrupt cut.
     private func handleSongEnded() {
+        // Smart sleep timer: if we've been asked to stop once the current
+        // queue (album/playlist) finishes and this WAS the last song in
+        // it, stop here — deliberately overriding repeatMode, since
+        // looping (.all) or repeating (.one) here would mean the timer
+        // never actually stops anything.
+        if isSleepTimerActive, sleepTimerStopsAtQueueEnd, currentIndex >= queue.count - 1 {
+            togglePlayPause()
+            restoreVolumeAfterSleepFade()
+            stopSleepTimer()
+            return
+        }
+
         switch repeatMode {
         case .one:
             // Repeat the current song — replay it from the beginning.
@@ -1380,20 +1406,80 @@ class AudioPlayer: ObservableObject {
         sleepTimerEndDate = nil
         sleepTimerRemaining = 0
         isSleepTimerActive = false
+        sleepTimerStopsAtQueueEnd = false
         // If the user cancels the timer WHILE it was mid-fade (e.g. they
         // started a new timer or tapped Cancel during the last 12 seconds),
         // restore full volume immediately rather than leaving playback
         // stuck at whatever faded-down level it was ramping through.
         restoreVolumeAfterSleepFade()
     }
-    
+
     /// Set a preset sleep timer (15, 30, 45, or 60 minutes).
     ///
     /// - Parameter minutes: Duration in minutes
     func setSleepTimer(minutes: Int) {
         startSleepTimer(duration: TimeInterval(minutes * 60))
     }
-    
+
+    /// Start a "smart" sleep timer that stops playback once the current
+    /// queue — e.g. the album or playlist the user is listening to —
+    /// finishes, instead of after a fixed duration.
+    ///
+    /// Unlike `startSleepTimer(duration:)`, there's no fixed end date to
+    /// count down to. Instead, `handleSongEnded()` checks
+    /// `sleepTimerStopsAtQueueEnd` every time a song finishes and, once
+    /// we're on the LAST song in `queue`, pauses right there instead of
+    /// advancing — even overriding `repeatMode` (`.all` would otherwise
+    /// loop back to the start, `.one` would otherwise repeat the last
+    /// song forever, both of which would mean the timer never actually
+    /// stops anything).
+    ///
+    /// Does nothing if there's no current song to anchor the estimate to.
+    func startSleepTimerAtEndOfQueue() {
+        // Cancel any existing timer first, same as the duration-based path.
+        stopSleepTimer()
+
+        guard currentIndex >= 0, currentIndex < queue.count else { return }
+
+        sleepTimerStopsAtQueueEnd = true
+        isSleepTimerActive = true
+        updateQueueEndSleepTimerEstimate()
+
+        // Runs once a second purely to keep the countdown UI (and the
+        // final fade-out) current — the actual stop is driven by queue
+        // position in `handleSongEnded()`, not by this timer reaching zero.
+        sleepTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.updateQueueEndSleepTimerEstimate()
+                self.applySleepFade(remaining: self.sleepTimerRemaining)
+            }
+        }
+    }
+
+    /// Recompute `sleepTimerRemaining` for the "stop at end of queue" mode:
+    /// however much time is left in the current song, plus the full listed
+    /// duration of every song still queued after it.
+    ///
+    /// This is a display estimate only (see the doc comment on
+    /// `sleepTimerStopsAtQueueEnd`) — it assumes the rest of the queue
+    /// plays straight through, which is the common case but not guaranteed.
+    private func updateQueueEndSleepTimerEstimate() {
+        guard currentIndex >= 0, currentIndex < queue.count else {
+            sleepTimerRemaining = 0
+            return
+        }
+
+        let remainingInCurrentSong = max(0, duration - currentTime)
+
+        let upcomingSongs = currentIndex + 1 < queue.count
+            ? queue[(currentIndex + 1)...]
+            : ArraySlice<NowPlaying>()
+        let remainingInUpcomingSongs = upcomingSongs.reduce(0.0) { $0 + Double($1.duration) }
+
+        sleepTimerRemaining = remainingInCurrentSong + remainingInUpcomingSongs
+    }
+
     // MARK: - Recently Played
     
     /// Add a song to the recently played history.

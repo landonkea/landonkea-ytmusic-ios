@@ -1,61 +1,84 @@
 import Foundation
 
-/// Client for fetching song lyrics from lrclib.net.
+/// Client for fetching song lyrics, trying multiple free/no-auth providers
+/// in sequence.
 ///
-/// lrclib.net is a free, open-source lyrics API that:
-/// - Requires NO authentication (no API key needed)
-/// - Returns both plain text and synced (timestamped) lyrics
-/// - Has a large database of songs
+/// PROVIDER CHAIN:
+/// 1. lrclib.net — tried first. Free, no auth, and the only one of the two
+///    that can return SYNCED (timestamped) lyrics for karaoke-style
+///    highlighting, so it's strictly preferred when it has the song.
+///    - `GET /api/get?track_name=X&artist_name=Y` — exact match lookup
+///    - `GET /api/search?q=X` — fuzzy search (used as a fallback within
+///      lrclib itself, before we ever fall through to provider #2)
+/// 2. lyrics.ovh — tried only if lrclib has nothing at all (404s or
+///    returns no lyrics for both the exact-match and search lookups).
+///    Also free and no auth, but plain-text only — no timestamps, so
+///    songs resolved through this path never get karaoke highlighting.
+///    Still strictly better than showing nothing.
+///    - `GET /v1/{artist}/{title}`
 ///
-/// API ENDPOINTS USED:
-/// - `GET /api/get?track_name=X&artist_name=Y` — exact match lookup
-/// - `GET /api/search?q=X` — fuzzy search (used as fallback)
-///
-/// NO LOGIN REQUIRED — this works completely anonymously.
+/// Both providers require NO LOGIN — everything here works anonymously.
 class LyricsClient {
-    
+
     // MARK: - Properties
-    
-    /// Base URL for the lrclib.net API
+
+    /// Base URL for the lrclib.net API (primary provider — supports synced lyrics).
     private let baseURL = "https://lrclib.net/api"
-    
+
+    /// Base URL for the lyrics.ovh API (fallback provider — plain text only).
+    private let fallbackBaseURL = "https://api.lyrics.ovh/v1"
+
     /// URL session for making HTTP requests
     private let session: URLSession
-    
+
     // MARK: - Initialization
-    
+
     /// Create a new lyrics client.
     ///
     /// - Parameter session: URL session to use (for testing, pass a mock).
     ///   Defaults to `NetworkCache.session` so repeated lyrics lookups for
     ///   the same track/artist are served from disk instead of re-hitting
-    ///   lrclib.net — lyrics are GET requests and effectively immutable
-    ///   for a given track, unlike InnerTube's POST-only API responses.
-    ///   See NetworkCache.swift for details.
+    ///   the lyrics providers — lyrics are GET requests and effectively
+    ///   immutable for a given track, unlike InnerTube's POST-only API
+    ///   responses. See NetworkCache.swift for details.
     init(session: URLSession = NetworkCache.session) {
         self.session = session
     }
-    
+
     // MARK: - Public Methods
-    
-    /// Fetch lyrics for a song by track name and artist.
+
+    /// Fetch lyrics for a song by track name and artist, trying each
+    /// provider in the chain until one returns something usable.
     ///
-    /// First tries an exact match (`/api/get`), then falls back to search (`/api/search`).
+    /// Order: lrclib exact match -> lrclib search -> lyrics.ovh. Each step
+    /// only runs if the previous one came back empty (404, no lyrics field,
+    /// decode failure, or a network error) — this is a genuine fallback
+    /// chain, not a replacement of one provider by another, so lrclib's
+    /// synced lyrics are still preferred whenever it has the song.
     ///
     /// - Parameters:
     ///   - trackName: Song title (e.g. "Bohemian Rhapsody")
     ///   - artistName: Artist name (e.g. "Queen")
-    /// - Returns: Lyrics data with plain and/or synced lyrics, or nil if not found
+    /// - Returns: Lyrics data with plain and/or synced lyrics, or nil if no
+    ///   provider had anything for this song.
     func fetchLyrics(trackName: String, artistName: String) async -> Lyrics? {
-        // Step 1: Try exact match (faster, more accurate)
+        // Step 1: Try exact match on lrclib (faster, more accurate, and the
+        // only path that can yield synced lyrics).
         if let lyrics = await fetchExactMatch(trackName: trackName, artistName: artistName) {
             return lyrics
         }
-        
-        // Step 2: Fall back to search (handles slight name differences)
-        return await searchLyrics(query: "\(trackName) \(artistName)")
+
+        // Step 2: Fall back to lrclib's fuzzy search (handles slight name
+        // differences within the same provider).
+        if let lyrics = await searchLyrics(query: "\(trackName) \(artistName)") {
+            return lyrics
+        }
+
+        // Step 3: lrclib had nothing at all — try the fallback provider.
+        // Plain text only (no timestamps), but better than showing nothing.
+        return await fetchFromFallbackProvider(trackName: trackName, artistName: artistName)
     }
-    
+
     // MARK: - Private Methods
     
     /// Try to get an exact match for the song.
@@ -120,6 +143,76 @@ class LyricsClient {
             print("Lyrics search failed: \(error)")
             return nil
         }
+    }
+
+    /// Fall back to lyrics.ovh when lrclib has nothing for this song.
+    ///
+    /// lyrics.ovh's API is a single, simple GET endpoint — no exact-match
+    /// vs. search distinction like lrclib, just `/v1/{artist}/{title}` —
+    /// and it only ever returns plain text, never timestamps. That means
+    /// a song resolved through this path shows lyrics but never gets
+    /// karaoke-style line highlighting; `Lyrics.hasSyncedLyrics` will be
+    /// `false` for it, which `LyricsView` already handles by falling back
+    /// to a plain scrolling view.
+    private func fetchFromFallbackProvider(trackName: String, artistName: String) async -> Lyrics? {
+        // lyrics.ovh takes artist/title as raw PATH components (not query
+        // params), so `/` and other path-breaking characters need
+        // percent-encoding via `.urlPathAllowed` rather than `.urlQueryAllowed`.
+        guard let artistEncoded = artistName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let trackEncoded = trackName.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
+            return nil
+        }
+
+        let urlString = "\(fallbackBaseURL)/\(artistEncoded)/\(trackEncoded)"
+        guard let url = URL(string: urlString) else { return nil }
+
+        do {
+            let (data, response) = try await session.data(from: url)
+
+            // lyrics.ovh returns 404 for songs it doesn't have, same as
+            // lrclib — that's an expected "not found," not an error to log.
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200 else {
+                return nil
+            }
+
+            let ovhResponse = try JSONDecoder().decode(LyricsOvhResponse.self, from: data)
+            return ovhResponse.toLyrics(trackName: trackName, artistName: artistName)
+        } catch {
+            print("Lyrics fallback provider (lyrics.ovh) failed: \(error)")
+            return nil
+        }
+    }
+}
+
+// MARK: - lyrics.ovh Response Model
+
+/// The JSON response from lyrics.ovh's API: `{"lyrics": "..."}`.
+///
+/// lyrics.ovh doesn't echo back the track/artist name or offer any synced
+/// timing, so `toLyrics(trackName:artistName:)` takes those from the
+/// caller's original request instead (unlike `LrclibResponse`, which gets
+/// them from the response body).
+struct LyricsOvhResponse: Codable {
+    let lyrics: String?
+
+    /// Convert to our app's Lyrics model. Returns nil if the response has
+    /// no usable lyrics text (an empty string shows up for some songs that
+    /// technically 200'd but have nothing indexed).
+    func toLyrics(trackName: String, artistName: String) -> Lyrics? {
+        guard let plainText = lyrics?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !plainText.isEmpty else {
+            return nil
+        }
+
+        return Lyrics(
+            trackName: trackName,
+            artistName: artistName,
+            plainText: plainText,
+            // lyrics.ovh never provides timestamps — this provider is a
+            // plain-text-only fallback by design.
+            syncedLines: nil
+        )
     }
 }
 
