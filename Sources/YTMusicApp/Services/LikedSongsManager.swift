@@ -1,6 +1,13 @@
 import Foundation
 import SwiftUI
 
+extension Notification.Name {
+    /// Posted whenever `LikedSongsManager.save()` runs (like, unlike, or a
+    /// CloudKit merge applying remote changes). CloudKitSyncManager
+    /// observes this to trigger a debounced push; see YTMusicApp.swift.
+    static let likedSongsDidChange = Notification.Name("likedSongsDidChange")
+}
+
 // MARK: - Liked Songs Manager
 
 /// Manages the user's liked songs locally.
@@ -44,6 +51,15 @@ class LikedSongsManager: ObservableObject {
     /// every change is guaranteed to also call `save()`.
     @Published private(set) var likedIds: Set<String> = []
 
+    /// When each currently-liked song was liked, keyed by video ID. This
+    /// exists alongside `likedIds` purely to support CloudKit sync's
+    /// conflict resolution (see `LikedSongConflictResolver` in
+    /// CloudKitSyncManager.swift) — a plain Set has no way to tell which of
+    /// two devices' "liked" state is newer when merging, so each like is
+    /// timestamped. `likedIds` remains the source of truth every existing
+    /// view reads from; this dict is sync-only bookkeeping.
+    private var likedTimestamps: [String: Date] = [:]
+
     /// Shared instance so AudioPlayer can read/toggle like state from the
     /// lock screen / Control Center "like" and "dislike" buttons, which
     /// only have access to AudioPlayer's MPRemoteCommandCenter handlers —
@@ -56,6 +72,13 @@ class LikedSongsManager: ObservableObject {
     /// small pieces of app data (settings, preferences) that should persist
     /// between app launches without needing a full database.
     private let defaultsKey = "likedSongIds"
+
+    /// Key for the parallel `likedTimestamps` dict (stored as
+    /// `[String: TimeInterval]` — UserDefaults' property-list storage
+    /// doesn't support `Date` values directly inside a dictionary the way
+    /// `stringArray(forKey:)` supports arrays of `String`, so timestamps
+    /// are stored as `timeIntervalSince1970` doubles instead).
+    private let timestampsDefaultsKey = "likedSongTimestamps"
 
     // MARK: - Initialization
 
@@ -93,12 +116,14 @@ class LikedSongsManager: ObservableObject {
     /// Like a specific song (adds its video ID to the set and persists).
     func like(_ videoId: String) {
         likedIds.insert(videoId)
+        likedTimestamps[videoId] = Date()
         save()
     }
 
     /// Unlike a specific song (removes its video ID from the set and persists).
     func unlike(_ videoId: String) {
         likedIds.remove(videoId)
+        likedTimestamps.removeValue(forKey: videoId)
         save()
     }
 
@@ -128,6 +153,12 @@ class LikedSongsManager: ObservableObject {
     /// care about membership, not order).
     private func save() {
         UserDefaults.standard.set(Array(likedIds), forKey: defaultsKey)
+        let timestampsAsIntervals = likedTimestamps.mapValues { $0.timeIntervalSince1970 }
+        UserDefaults.standard.set(timestampsAsIntervals, forKey: timestampsDefaultsKey)
+
+        // Let CloudKitSyncManager (if wired up) know liked songs changed —
+        // see the matching comment in PlaylistManager.savePlaylists().
+        NotificationCenter.default.post(name: .likedSongsDidChange, object: nil)
     }
 
     /// Load liked IDs from UserDefaults.
@@ -140,5 +171,33 @@ class LikedSongsManager: ObservableObject {
         if let ids = UserDefaults.standard.stringArray(forKey: defaultsKey) {
             likedIds = Set(ids)
         }
+        if let intervals = UserDefaults.standard.dictionary(forKey: timestampsDefaultsKey) as? [String: Double] {
+            likedTimestamps = intervals.mapValues { Date(timeIntervalSince1970: $0) }
+        }
+        // Backward compatibility: songs liked before timestamps existed
+        // (or any ID that's somehow missing a timestamp) get "now" so they
+        // still participate correctly in a CloudKit merge rather than being
+        // dropped or crashing a lookup.
+        for id in likedIds where likedTimestamps[id] == nil {
+            likedTimestamps[id] = Date()
+        }
+    }
+
+    // MARK: - CloudKit Sync Support
+
+    /// Current liked songs as timestamped entries, for CloudKitSyncManager
+    /// to encode into CKRecords and compare against the cloud's copy.
+    func currentLikedEntries() -> [LikedSongEntry] {
+        likedIds.map { LikedSongEntry(videoId: $0, likedAt: likedTimestamps[$0] ?? Date()) }
+    }
+
+    /// Replaces local liked-song state with a CloudKit-merged result and
+    /// persists, without bumping timestamps (the merge already picked the
+    /// newer entry for each ID — see `LikedSongConflictResolver`). Called
+    /// only by CloudKitSyncManager.
+    func applyMergedLikedEntries(_ merged: [LikedSongEntry]) {
+        likedIds = Set(merged.map { $0.videoId })
+        likedTimestamps = Dictionary(uniqueKeysWithValues: merged.map { ($0.videoId, $0.likedAt) })
+        save()
     }
 }

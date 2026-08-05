@@ -1,6 +1,14 @@
 import Foundation
 import SwiftUI
 
+extension Notification.Name {
+    /// Posted whenever `PlaylistManager.savePlaylists()` runs (create,
+    /// rename, delete, add/remove song, pin toggle, or a CloudKit merge
+    /// applying remote changes). CloudKitSyncManager observes this to
+    /// trigger a debounced push; see YTMusicApp.swift for the wiring.
+    static let playlistsDidChange = Notification.Name("playlistsDidChange")
+}
+
 // MARK: - Playlist Manager
 
 /// Manages local playlists — create, rename, delete, add/remove songs.
@@ -121,6 +129,7 @@ class PlaylistManager: ObservableObject {
     func renamePlaylist(_ playlist: Playlist, newName: String) {
         guard let index = index(of: playlist) else { return }
         playlists[index].name = newName
+        playlists[index].modifiedAt = Date()
         savePlaylists()
     }
 
@@ -138,6 +147,7 @@ class PlaylistManager: ObservableObject {
     func togglePin(_ playlist: Playlist) {
         guard let index = index(of: playlist) else { return }
         playlists[index].isPinned.toggle()
+        playlists[index].modifiedAt = Date()
 
         // Re-sort BEFORE saving, so the order written to disk always
         // matches what's shown on screen. (Previously this saved first and
@@ -163,6 +173,7 @@ class PlaylistManager: ObservableObject {
         guard !playlists[index].songs.contains(where: { $0.id == song.id }) else { return }
 
         playlists[index].songs.append(song)
+        playlists[index].modifiedAt = Date()
         savePlaylists()
     }
 
@@ -174,6 +185,7 @@ class PlaylistManager: ObservableObject {
     func removeSong(_ song: NowPlaying, from playlist: Playlist) {
         guard let index = index(of: playlist) else { return }
         playlists[index].songs.removeAll { $0.id == song.id }
+        playlists[index].modifiedAt = Date()
         savePlaylists()
     }
 
@@ -246,6 +258,24 @@ class PlaylistManager: ObservableObject {
             // which is unfortunate but not catastrophic.
             print("Failed to save playlists: \(error)")
         }
+
+        // Let CloudKitSyncManager (if wired up) know playlists changed, so
+        // it can push the update. Posted unconditionally (even if CloudKit
+        // sync is unavailable/unconfigured) — NotificationCenter posts with
+        // no observers are a no-op, so this has zero cost when sync isn't
+        // set up, e.g. in unit tests that construct PlaylistManager alone.
+        NotificationCenter.default.post(name: .playlistsDidChange, object: nil)
+    }
+
+    /// Replaces `playlists` with a CloudKit-merged result and saves, without
+    /// re-touching `modifiedAt` on anything (the merge already picked the
+    /// newer copy of each playlist — bumping timestamps again here would
+    /// make every future sync think local just changed, defeating the
+    /// point). Called only by CloudKitSyncManager.
+    func applyMergedPlaylists(_ merged: [Playlist]) {
+        playlists = merged
+        sortPlaylistsByPinThenDate()
+        savePlaylists()
     }
 
     /// Load playlists from disk.
@@ -280,7 +310,7 @@ class PlaylistManager: ObservableObject {
 /// from JSON, which is how `PlaylistManager` saves/loads it above — as long
 /// as every stored property is itself `Codable` (String, [NowPlaying], Date,
 /// and Bool all are).
-struct Playlist: Identifiable, Codable {
+struct Playlist: Identifiable, Codable, Equatable {
     /// Unique identifier for this playlist
     let id: String
 
@@ -301,6 +331,19 @@ struct Playlist: Identifiable, Codable {
     /// decoder fills in `false` for any playlist whose saved JSON doesn't
     /// contain an "isPinned" field.
     var isPinned: Bool = false
+
+    /// When this playlist was last changed (renamed, reordered, songs
+    /// added/removed, pin toggled). Defaults to `createdAt`-equivalent
+    /// "now" for backward compatibility with playlist JSON saved before
+    /// CloudKit sync existed, same pattern as `isPinned` above.
+    ///
+    /// This is CloudKitSyncManager's conflict-resolution key: when the same
+    /// playlist has diverged between two devices, whichever copy has the
+    /// newer `modifiedAt` wins the merge (see `PlaylistConflictResolver` in
+    /// CloudKitSyncManager.swift). It is NOT used for anything else —
+    /// PlaylistManager's own sort order is by `createdAt`/`isPinned` only,
+    /// unchanged from before sync existed.
+    var modifiedAt: Date = Date()
 
     /// Number of songs in the playlist (computed convenience property)
     var songCount: Int {

@@ -127,6 +127,47 @@ Xcode, plain "Automatic" signing works with no extra flags.
   Engine) — confirmed by reading Apple's documented Catalyst behavior, not
   by feeling for a vibration that can't exist on this hardware.
 
+## CloudKit Sync
+
+Playlists and liked songs (only — not listening stats/play counts) sync
+across a user's devices via their private iCloud database. See
+`Sources/YTMusicApp/Services/CloudKitSyncManager.swift` for the full
+design writeup (why raw CloudKit instead of `NSPersistentCloudKitContainer`,
+the conflict-resolution rules, and known limitations like no deletion sync
+and no push-based `CKSubscription`).
+
+**What's verified in this environment (no signing team, no iCloud account):**
+- `CloudKitRecordCoding`'s `Playlist`/`LikedSongEntry` <-> `CKRecord`
+  encode/decode round trips (`CKRecord` can be constructed with no network
+  or entitlements).
+- `PlaylistConflictResolver` / `LikedSongConflictResolver` — pure
+  last-write-wins-by-timestamp merge logic, no CloudKit types involved.
+- `CloudKitSyncManager`'s full pull/merge/apply/push orchestration, run
+  against `InMemoryCloudRecordStore` (an in-memory fake conforming to the
+  same `CloudRecordStore` protocol the real `CKDatabaseRecordStore` does).
+- `xcodegen generate` + `xcodebuild build`/`test` compile and pass cleanly
+  with the `CloudKit.framework` link and the iCloud container entitlement
+  in place.
+
+See `Tests/YTMusicAppTests/CloudKitSyncTests.swift` for all of the above.
+
+**What is NOT verified here, and needs a real device/simulator signed into
+iCloud with a real Apple Developer team provisioning
+`iCloud.com.landonkea.ytmusic`:**
+- That `CKDatabaseRecordStore` (the thin adapter over a real `CKDatabase`)
+  actually talks to CloudKit correctly — zone creation, record
+  save/fetch/delete against Apple's servers.
+- Real cross-device sync behavior (two physical/simulated devices
+  converging on the same merged state).
+- `com.apple.developer.icloud-container-identifiers` / `-icloud-services`
+  entitlements resolving to a real, usable container — in local/CI builds
+  without a signing team, `CKContainer` operations fail with a
+  "not authenticated"/no-account error, which `performSync()` catches and
+  logs, skipping the sync pass rather than crashing. Local playlists/liked
+  songs remain fully usable offline either way — this only affects
+  cross-device sync, the same category of caveat as the widget's App Group
+  (see Mac Catalyst section above).
+
 ## Running Tests
 
 ```

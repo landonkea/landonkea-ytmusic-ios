@@ -1,29 +1,50 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-App Group entitlement for YTMusicApp.
+App Group + iCloud/CloudKit entitlements for YTMusicApp.
 
-Grants this app access to the group.com.landonkea.ytmusic shared container,
-which is how AudioPlayer hands "now playing" state to the YTMusicWidget
-extension (see Sources/YTMusicShared/NowPlayingSnapshot.swift for the full
-explanation). YTMusicWidget.entitlements declares the SAME group string —
-both targets must list an identical App Group for the shared container to
-resolve to the same place for each process.
+APP GROUP: Grants this app access to the group.com.landonkea.ytmusic shared
+container, which is how AudioPlayer hands "now playing" state to the
+YTMusicWidget extension (see Sources/YTMusicShared/NowPlayingSnapshot.swift
+for the full explanation). YTMusicWidget.entitlements declares the SAME
+group string — both targets must list an identical App Group for the shared
+container to resolve to the same place for each process.
 
-NOTE ON LOCAL/CI BUILDS WITHOUT A SIGNING TEAM: App Groups are normally
-provisioned through a paid Apple Developer account. In this repo (no
-committed signing team, "sign to run locally" style local builds),
-UserDefaults(suiteName:) against this group may resolve to nil rather than
-a real shared container. NowPlayingSnapshotStore treats that as "shared
-state unavailable" and no-ops gracefully — the app's own playback is
-unaffected; only the widget would show its empty state until a real
-provisioning profile with this App Group capability is set up.
+ICLOUD/CLOUDKIT: Grants access to the iCloud.com.landonkea.ytmusic private
+CloudKit container, used by CloudKitSyncManager (see
+Sources/YTMusicApp/Services/CloudKitSyncManager.swift) to sync the user's
+playlists and liked songs — and ONLY those two things, not listening
+stats — across their devices. The container identifier follows this app's
+existing App-Group naming convention (group.com.landonkea.ytmusic ->
+iCloud.com.landonkea.ytmusic).
+
+NOTE ON LOCAL/CI BUILDS WITHOUT A SIGNING TEAM: Both App Groups and iCloud
+containers are normally provisioned through a paid Apple Developer account.
+In this repo (no committed signing team, "sign to run locally" style local
+builds), UserDefaults(suiteName:) against the App Group may resolve to nil,
+and CKContainer operations against the iCloud container will fail (no
+account / no real container) rather than sync anything. Both failure paths
+are handled gracefully in code: NowPlayingSnapshotStore treats a nil App
+Group container as "shared state unavailable" and no-ops; CloudKitSyncManager
+catches the container/zone-creation error and logs+skips the sync pass
+rather than crashing (see performSync() in CloudKitSyncManager.swift). The
+app's own local playlists/liked songs/playback are unaffected either way —
+only cross-device sync and the widget's shared state require a real
+provisioning profile with these capabilities configured.
 -->
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.com.landonkea.ytmusic</string>
+	</array>
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.com.landonkea.ytmusic</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
 	</array>
 </dict>
 </plist>

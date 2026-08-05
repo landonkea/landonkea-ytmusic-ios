@@ -67,6 +67,10 @@ targets:
       # AudioPlayer whenever the song/play state changes so the Home
       # Screen / Lock Screen Now Playing widget redraws.
       - sdk: WidgetKit.framework
+      # CloudKit — CKContainer/CKRecord, used by CloudKitSyncManager to
+      # sync playlists + liked songs (only) across a user's devices via
+      # their private iCloud database. See CloudKitSyncManager.swift.
+      - sdk: CloudKit.framework
       # Embed the widget extension into the app bundle so installing the
       # app also installs its widget (the standard way a widget ships —
       # there's no separate download).
